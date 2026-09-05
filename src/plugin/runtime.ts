@@ -19,6 +19,7 @@ import { registerOrchestrationCommands } from '../orchestration/commands';
 import { createOrchestrationScheduler } from '../orchestration/scheduler';
 import { enqueueRun } from '../orchestration/runner';
 import { startCliEndpoint, stopCliEndpoint, registerCliCommands } from '../cli/commands';
+import { registerRetrievalSettings } from '../retrieval/settings';
 
 export interface PluginContext {
 	dataDir: string;
@@ -92,6 +93,11 @@ export async function start(): Promise<void> {
 			await registerOrchestrationSettings();
 		} catch (e) {
 			console.warn('[echo] orchestration settings registration failed', e);
+		}
+		try {
+			await registerRetrievalSettings();
+		} catch (e) {
+			console.warn('[echo] retrieval settings registration failed', e);
 		}
 
 		const resolution = await resolveSettings();
