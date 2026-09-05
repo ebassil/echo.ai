@@ -24,6 +24,8 @@ export interface IndexOptions {
 	force?: boolean;
 	batchSize?: number;
 	onProgress?: (processed: number, total: number) => void;
+	onProgressDetailed?: (processed: number, total: number, currentNoteId: string) => void;
+	signal?: AbortSignal;
 	maxChars?: number;
 	overlapChars?: number;
 	embeddingBatchSize?: number;
@@ -221,6 +223,10 @@ async function runIndexInternal(scope: Scope, provider: LLMProvider, options: In
 
 	const handleNotes = async (notes: any[]) => {
 		for (const note of notes) {
+			if (options.signal?.aborted) {
+				result.errors.push({ noteId: note.id, message: 'Cancelled' });
+				break;
+			}
 			if (await isVaultLocked()) {
 				result.errors.push({ noteId: note.id, message: 'Vault locked during run, stopping' });
 				break;
@@ -233,6 +239,11 @@ async function runIndexInternal(scope: Scope, provider: LLMProvider, options: In
 			}
 			processed++;
 			if (options.onProgress) options.onProgress(processed, notes.length);
+			if (options.onProgressDetailed) options.onProgressDetailed(processed, notes.length, note.id);
+			if (options.signal?.aborted) {
+				result.errors.push({ noteId: '__cancel__', message: 'Cancelled after note' });
+				break;
+			}
 		}
 	};
 
@@ -303,4 +314,79 @@ export async function purgeDeletedNote(noteId: string): Promise<void> {
 
 export function isIndexingRunning(): boolean {
 	return running !== null;
+}
+
+// ---- Orchestration Pipeline adapter ----
+import type { Pipeline, PipelineResult } from '../orchestration/types';
+
+async function runStructuralFromNoteIds(
+	noteIds: string[],
+	provider: LLMProvider,
+	options: IndexOptions & { signal?: AbortSignal; onProgressDetailed?: (p: number, t: number, id: string) => void },
+): Promise<PipelineResult> {
+	const result: PipelineResult = {
+		notesProcessed: 0,
+		chunksCreated: 0,
+		entitiesCreated: 0,
+		relationsCreated: 0,
+		skipped: 0,
+		errors: [],
+		unresolvedLinks: 0,
+	};
+	if (await isVaultLocked()) {
+		return { ...result, errors: [{ noteId: '__vault__', message: 'Indexing paused: vault is locked' }] };
+	}
+	const stats = { chunksCreated: 0, unresolvedLinks: 0 };
+	let processed = 0;
+	for (const noteId of noteIds) {
+		if (options.signal?.aborted) {
+			result.errors.push({ noteId, message: 'Cancelled' });
+			break;
+		}
+		if (await isVaultLocked()) {
+			result.errors.push({ noteId, message: 'Vault locked during run' });
+			break;
+		}
+		let note: any;
+		try {
+			note = await (joplin as any).data.get(['notes', noteId], {
+				fields: ['id', 'title', 'parent_id', 'created_time', 'updated_time', 'body'],
+			});
+		} catch (e) {
+			result.errors.push({ noteId, message: String(e) });
+			processed++;
+			continue;
+		}
+		if (!note || !note.id) {
+			result.errors.push({ noteId, message: 'Note not found' });
+			processed++;
+			continue;
+		}
+		const outcome = await processSingleNote(note, provider, options, stats);
+		if (outcome.skipped) result.skipped++;
+		else {
+			result.notesProcessed++;
+			if (outcome.error) result.errors.push({ noteId, message: outcome.error });
+		}
+		processed++;
+		if (options.onProgress) options.onProgress(processed, noteIds.length);
+		if (options.onProgressDetailed) options.onProgressDetailed(processed, noteIds.length, noteId);
+	}
+	result.chunksCreated = stats.chunksCreated;
+	result.unresolvedLinks = stats.unresolvedLinks;
+	return result;
+}
+
+export function createStructuralPipeline(provider: LLMProvider, baseOptions: IndexOptions = {}): Pipeline {
+	return {
+		async run(noteIds: string[], opts: { signal?: AbortSignal; onProgress?: (p: number, t: number, id: string) => void; force?: boolean }): Promise<PipelineResult> {
+			return runStructuralFromNoteIds(noteIds, provider, {
+				...baseOptions,
+				force: opts.force ?? baseOptions.force,
+				onProgress: undefined,
+				onProgressDetailed: opts.onProgress,
+				signal: opts.signal,
+			});
+		},
+	};
 }

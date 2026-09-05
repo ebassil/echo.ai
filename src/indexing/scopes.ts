@@ -1,3 +1,6 @@
+// Re-export canonical scope from orchestration as single source of truth
+export { resolveScope as resolveOrchestrationScope } from '../orchestration/scope';
+
 import joplin from 'api';
 
 export type Scope =
@@ -81,30 +84,21 @@ async function fetchNotesForFolders(folderIds: Set<string>): Promise<string[]> {
 	return ids;
 }
 
+// Canonical implementation lives in src/orchestration/scope.ts.
+// This wrapper delegates to it so existing callers continue to work while
+// new code imports from orchestration/scope.ts as the single source of truth.
 export async function resolveScope(scope: Scope): Promise<string[]> {
+	// Lazy import to avoid circular deps during startup
+	const { resolveScope: canonicalResolve } = await import('../orchestration/scope');
 	if (scope.kind === 'note') {
-		const note = await fetchNoteById(scope.noteId);
-		return note ? [note.id] : [];
+		try {
+			return await canonicalResolve({ noteId: scope.noteId });
+		} catch {
+			return [];
+		}
 	}
-	if (scope.kind === 'folder') {
-		const descendants = await getDescendantFolderIds(scope.folderId);
-		return fetchNotesForFolders(descendants);
-	}
-	// all
-	const ids: string[] = [];
-	let page = 1;
-	while (true) {
-		const result: any = await (joplin as any).data.get(['notes'], {
-			fields: ['id'],
-			page,
-			limit: 100,
-		});
-		const items: any[] = result.items ?? result ?? [];
-		for (const note of items) ids.push(note.id);
-		if (!result.has_more) break;
-		page++;
-	}
-	return ids;
+	if (scope.kind === 'folder') return canonicalResolve({ folderId: scope.folderId });
+	return canonicalResolve('all');
 }
 
 export async function fetchNotesPaginated(

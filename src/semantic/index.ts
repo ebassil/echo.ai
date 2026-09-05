@@ -16,6 +16,8 @@ export interface SemanticIndexOptions {
 	force?: boolean;
 	batchSize?: number;
 	onProgress?: (processed: number, total: number) => void;
+	onProgressDetailed?: (processed: number, total: number, currentNoteId: string) => void;
+	signal?: AbortSignal;
 	cascade?: { mode?: 'lazy' | 'eager'; depth?: number } | false;
 	trigger?: string;
 	scope?: string;
@@ -206,6 +208,10 @@ async function runSemanticInternal(scope: Scope, provider: any, settings: any, o
 	let processed = 0;
 	const handleNotes = async (notes: any[]) => {
 		for (const note of notes) {
+			if (options.signal?.aborted) {
+				result.errors.push({ noteId: note.id, message: 'Cancelled' });
+				break;
+			}
 			if (await isVaultLocked()) {
 				result.errors.push({ noteId: note.id, message: 'Vault locked during run, stopping' });
 				// Queue remaining
@@ -220,6 +226,11 @@ async function runSemanticInternal(scope: Scope, provider: any, settings: any, o
 			}
 			processed++;
 			if (options.onProgress) options.onProgress(processed, notes.length);
+			if (options.onProgressDetailed) options.onProgressDetailed(processed, notes.length, note.id);
+			if (options.signal?.aborted) {
+				result.errors.push({ noteId: '__cancel__', message: 'Cancelled after note' });
+				break;
+			}
 		}
 	};
 
@@ -338,4 +349,103 @@ export async function purgeSemanticForDeletedNote(noteId: string): Promise<void>
 	await deleteSemanticForNote(db, noteId);
 	await run(db, `DELETE FROM index_state WHERE note_id = ?`, [noteId]);
 	await run(db, `DELETE FROM notes WHERE id = ?`, [noteId]);
+}
+
+// ---- Orchestration Pipeline adapter ----
+import type { Pipeline, PipelineResult } from '../orchestration/types';
+
+async function runSemanticFromNoteIds(
+	noteIds: string[],
+	provider: any,
+	settings: any,
+	options: SemanticIndexOptions & { signal?: AbortSignal; onProgressDetailed?: (p: number, t: number, id: string) => void },
+): Promise<PipelineResult> {
+	const db = getDatabase();
+	if (await isVaultLocked()) {
+		return {
+			notesProcessed: 0,
+			chunksCreated: 0,
+			entitiesCreated: 0,
+			relationsCreated: 0,
+			skipped: 0,
+			errors: [{ noteId: '__vault__', message: 'Semantic indexing paused: vault is locked' }],
+		};
+	}
+	const stats = { entitiesCreated: 0, relationsCreated: 0 };
+	const embeddingCache = new Map<string, number[]>();
+	const result: PipelineResult = {
+		notesProcessed: 0,
+		chunksCreated: 0,
+		entitiesCreated: 0,
+		relationsCreated: 0,
+		skipped: 0,
+		errors: [],
+	};
+	let processed = 0;
+	for (const noteId of noteIds) {
+		if (options.signal?.aborted) {
+			result.errors.push({ noteId, message: 'Cancelled' });
+			break;
+		}
+		if (await isVaultLocked()) {
+			result.errors.push({ noteId, message: 'Vault locked during run' });
+			break;
+		}
+		const note = await getNoteContent(noteId);
+		if (!note) {
+			result.errors.push({ noteId, message: 'Note not found or vault locked' });
+			processed++;
+			if (options.onProgress) options.onProgress(processed, noteIds.length);
+			if (options.onProgressDetailed) options.onProgressDetailed(processed, noteIds.length, noteId);
+			continue;
+		}
+		const outcome = await processSingleSemanticNote(note, provider, settings, {
+			force: options.force,
+			cascade: options.cascade,
+			onProgressDetailed: options.onProgressDetailed,
+			signal: options.signal,
+		} as any, stats, embeddingCache);
+		if (outcome.skipped) result.skipped++;
+		else {
+			result.notesProcessed++;
+			if (outcome.error) result.errors.push({ noteId, message: outcome.error });
+			else {
+				const cascadeOptions = resolveCascadeOptions(settings, options.cascade === false ? { mode: 'lazy' } : (options.cascade as any));
+				if (cascadeOptions.mode === 'lazy') {
+					await runLazyCascade(db, note.id);
+				} else {
+					const affected = outcome.affectedEntityIds ?? [];
+					await runEagerCascade(db, note.id, affected, cascadeOptions, async (nid) => {
+						const n = await getNoteContent(nid);
+						if (!n) return;
+						const res = await processSingleSemanticNote(n, provider, settings, { force: options.force, cascade: false, signal: options.signal } as any, stats, embeddingCache);
+						if (res.skipped) result.skipped++;
+						else {
+							result.notesProcessed++;
+							if (res.error) result.errors.push({ noteId: nid, message: res.error });
+						}
+					});
+				}
+			}
+		}
+		processed++;
+		if (options.onProgress) options.onProgress(processed, noteIds.length);
+		if (options.onProgressDetailed) options.onProgressDetailed(processed, noteIds.length, noteId);
+	}
+	result.entitiesCreated = stats.entitiesCreated;
+	result.relationsCreated = stats.relationsCreated;
+	return result;
+}
+
+export function createSemanticPipeline(provider: any, settings: any): Pipeline {
+	return {
+		async run(noteIds: string[], opts: { signal?: AbortSignal; onProgress?: (p: number, t: number, id: string) => void; force?: boolean; cascade?: { mode: 'lazy' | 'eager'; depth?: number } | false }): Promise<PipelineResult> {
+			return runSemanticFromNoteIds(noteIds, provider, settings, {
+				force: opts.force,
+				cascade: opts.cascade,
+				signal: opts.signal,
+				onProgressDetailed: opts.onProgress,
+			});
+		},
+	};
 }
