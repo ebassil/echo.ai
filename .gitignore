@@ -5,6 +5,7 @@ node_modules/
 dist/
 publish/
 *.jpl
+cli/dist/
 
 # Logs
 logs/

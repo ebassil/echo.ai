@@ -3,9 +3,14 @@ import { SettingItemType } from 'api/types';
 
 export const ORCHESTRATION_SETTINGS = {
   orchestrationSchedule: 'echo.orchestrationSchedule',
+  cliPort: 'echo.cliPort',
 } as const;
 
 export const DEFAULT_ORCHESTRATION_SCHEDULE = 'off';
+
+export function isValidCliPort(value: number): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && (value === 0 || (value >= 1024 && value <= 65535));
+}
 
 export function isValidOrchestrationSchedule(value: string): boolean {
   if (typeof value !== 'string') return false;
@@ -68,7 +73,28 @@ export async function registerOrchestrationSettings(): Promise<void> {
       label: 'Orchestration schedule',
       description: 'Periodic reindex schedule: off, interval (e.g. 30m, 6h, 1d, every 30m), or cron (e.g. 0 */6 * * *). Minimum granularity 1 minute.',
     },
+    [ORCHESTRATION_SETTINGS.cliPort]: {
+      value: 0,
+      type: SettingItemType.Int,
+      public: true,
+      section: 'echo',
+      label: 'CLI endpoint port (0 = auto)',
+      description: 'Port for the loopback-only echo CLI HTTP endpoint (127.0.0.1). 0 lets echo.ai pick an ephemeral port and persist it for the CLI. The endpoint is a deliberate, reviewed dual-use behavior: loopback only, guarded by a per-install token, and it never exposes note content to the network. See docs/cli-security.md.',
+      minimum: 0,
+      maximum: 65535,
+      step: 1,
+    },
   });
+}
+
+export async function resolveCliPort(): Promise<number> {
+  try {
+    const v = await joplin.settings.value(ORCHESTRATION_SETTINGS.cliPort);
+    if (isValidCliPort(v)) return v;
+    return 0;
+  } catch {
+    return 0;
+  }
 }
 
 export async function resolveOrchestrationSchedule(): Promise<string> {

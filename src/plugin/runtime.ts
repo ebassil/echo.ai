@@ -18,6 +18,7 @@ import { createTriggers, stopGlobalTriggers } from '../orchestration/triggers';
 import { registerOrchestrationCommands } from '../orchestration/commands';
 import { createOrchestrationScheduler } from '../orchestration/scheduler';
 import { enqueueRun } from '../orchestration/runner';
+import { startCliEndpoint, stopCliEndpoint, registerCliCommands } from '../cli/commands';
 
 export interface PluginContext {
 	dataDir: string;
@@ -110,6 +111,15 @@ export async function start(): Promise<void> {
 		await watchSettings();
 
 		context = { dataDir, settings: resolution.settings, provider };
+
+		// Start loopback CLI endpoint (after DB open, before triggers). Failure is
+		// non-fatal: orchestration commands continue to work without the HTTP surface.
+		await startCliEndpoint(dataDir);
+		try {
+			await registerCliCommands();
+		} catch (e) {
+			console.warn('[echo] cli commands registration failed', e);
+		}
 
 		// Configure orchestration pipeline executor (serial runner owns SQLite writes)
 		try {
@@ -224,6 +234,8 @@ export async function stop(): Promise<void> {
 			orchestrationTriggers = null;
 		}
 		stopGlobalTriggers();
+		// Stop CLI endpoint first: reject new requests while remaining services tear down
+		await stopCliEndpoint();
 		// Abort in-progress runner run after current note
 		try {
 			const current = getCurrentRun();
