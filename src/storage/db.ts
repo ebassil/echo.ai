@@ -18,6 +18,7 @@ export async function openDatabase(dataDir: string): Promise<void> {
 	const dbPath = join(dataDir, INDEX_DB_FILENAME);
 
 	db = await open(sqlite3, dbPath);
+	await run(db, 'PRAGMA foreign_keys = ON');
 	await applyMigrations(db);
 }
 
