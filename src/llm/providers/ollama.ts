@@ -137,15 +137,34 @@ async function ensureOk(response: Response, baseUrl: string): Promise<void> {
 	throw new Error(`Provider error from ${baseUrl} (HTTP ${response.status}): ${detail}`);
 }
 
-function parseExtraction(raw: string): ExtractionResult {
-	const jsonText = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim();
+export function parseExtraction(raw: string): ExtractionResult {
+	const jsonText = raw
+		.trim()
+		.replace(/^```(?:json)?\s*/i, '')
+		.replace(/```\s*$/m, '')
+		.trim();
 
 	try {
 		const parsed = JSON.parse(jsonText) as { entities?: unknown; relations?: unknown };
-		return {
-			entities: Array.isArray(parsed.entities) ? (parsed.entities as Entity[]) : [],
-			relations: Array.isArray(parsed.relations) ? (parsed.relations as Relation[]) : [],
-		};
+		const entitiesRaw = Array.isArray(parsed.entities) ? parsed.entities : [];
+		const relationsRaw = Array.isArray(parsed.relations) ? parsed.relations : [];
+		const entities: Entity[] = entitiesRaw
+			.map((e: any) => {
+				if (!e || typeof e.name !== 'string') return null;
+				const entity: Entity = { name: e.name, type: typeof e.type === 'string' ? e.type : 'unknown' };
+				if (typeof e.confidence === 'number' && isFinite(e.confidence)) entity.confidence = e.confidence;
+				return entity;
+			})
+			.filter((e): e is Entity => e !== null);
+		const relations: Relation[] = relationsRaw
+			.map((r: any) => {
+				if (!r || typeof r.from !== 'string' || typeof r.to !== 'string' || typeof r.type !== 'string') return null;
+				const relation: Relation = { from: r.from, to: r.to, type: r.type };
+				if (typeof r.confidence === 'number' && isFinite(r.confidence)) relation.confidence = r.confidence;
+				return relation;
+			})
+			.filter((r): r is Relation => r !== null);
+		return { entities, relations };
 	} catch {
 		return { entities: [], relations: [] };
 	}

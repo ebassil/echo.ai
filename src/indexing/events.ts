@@ -3,6 +3,17 @@ import { indexNote, purgeDeletedNote } from './pipeline';
 import type { LLMProvider } from '../llm/provider';
 import { isVaultLocked } from './vault';
 
+// Lazy import for enrichment to avoid circular deps - dynamic check
+function isEnrichmentInFlight(noteId: string): boolean {
+	try {
+		const enrichment = require('../semantic/enrichment');
+		if (enrichment && typeof enrichment.isEnrichmentInFlight === 'function') {
+			return enrichment.isEnrichmentInFlight(noteId);
+		}
+	} catch {}
+	return false;
+}
+
 export interface EventsOptions {
 	debounceMs?: number;
 	maxQueueSize?: number;
@@ -39,6 +50,10 @@ export function createIndexingEvents(options: EventsOptions): EventsHandle {
 
 	function enqueue(noteId: string, isDelete = false): void {
 		if (disposed) return;
+		if (isEnrichmentInFlight(noteId)) {
+			console.info(`[echo] skipping enqueue for ${noteId} - enrichment in flight`);
+			return;
+		}
 
 		if (pending.size >= maxQueueSize && !pending.has(noteId)) {
 			// Evict oldest

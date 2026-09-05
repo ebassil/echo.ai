@@ -11,12 +11,14 @@ export interface ChatOptions {
 export interface Entity {
 	name: string;
 	type: string;
+	confidence?: number;
 }
 
 export interface Relation {
 	from: string;
 	to: string;
 	type: string;
+	confidence?: number;
 }
 
 export interface ExtractionResult {

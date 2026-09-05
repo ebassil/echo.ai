@@ -49,6 +49,11 @@ export async function startWatching(options: WatchOptions): Promise<EventsHandle
 			} catch (e) {
 				console.warn('[echo] catch-up after unlock failed', e);
 			}
+			// Flush semantic deferred queue
+			try {
+				const semantic = await import('../semantic/index');
+				if (semantic.flushDeferredQueue) await semantic.flushDeferredQueue();
+			} catch {}
 			if (options.onUnlock) {
 				try {
 					await options.onUnlock();

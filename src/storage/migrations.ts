@@ -201,6 +201,47 @@ const migrations: Migration[] = [
 			await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model)`);
 		},
 	},
+	{
+		version: 3,
+		apply: async (dbConnection: any) => {
+			await run(dbConnection, 'PRAGMA foreign_keys = ON');
+
+			// Relation evidence join table for lazy evidence counting
+			await run(
+				dbConnection,
+				`CREATE TABLE IF NOT EXISTS relation_evidence (
+					relation_id TEXT NOT NULL REFERENCES relations(id) ON DELETE CASCADE,
+					chunk_id TEXT NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+					note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+					created_at TEXT NOT NULL,
+					PRIMARY KEY (relation_id, chunk_id)
+				)`,
+			);
+
+			await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_relation_evidence_relation ON relation_evidence(relation_id)`);
+			await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_relation_evidence_chunk ON relation_evidence(chunk_id)`);
+			await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_relation_evidence_note ON relation_evidence(note_id)`);
+
+			// Add source discriminator to nodes and edges for enrichment
+			// Use helper to avoid duplicate column error on re-apply
+			async function addSourceColumn(table: string): Promise<void> {
+				const columns: { name: string }[] = await all(dbConnection, `SELECT name FROM pragma_table_info('${table}')`, []);
+				const hasSource = columns.some((c) => c.name === 'source');
+				if (hasSource) return;
+				await run(
+					dbConnection,
+					`ALTER TABLE ${table} ADD COLUMN source TEXT CHECK (source IN ('joplin','enrichment')) DEFAULT 'joplin'`,
+				);
+			}
+
+			await addSourceColumn('nodes');
+			await addSourceColumn('edges');
+
+			// Ensure existing rows default correctly (ALTER TABLE DEFAULT does not backfill NULLs if column existed with different default)
+			await run(dbConnection, `UPDATE nodes SET source = 'joplin' WHERE source IS NULL`);
+			await run(dbConnection, `UPDATE edges SET source = 'joplin' WHERE source IS NULL`);
+		},
+	},
 ];
 
 export const LATEST_SCHEMA_VERSION: number = migrations[migrations.length - 1].version;
