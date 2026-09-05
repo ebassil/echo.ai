@@ -1,0 +1,16 @@
+{
+	"manifest_version": 1,
+	"id": "com.echoai.joplin-plugin",
+	"app_min_version": "3.0",
+	"version": "0.1.0",
+	"name": "echo.ai",
+	"description": "LLM-powered interaction with your notes: chat with note context, a knowledge graph, and a composable retrieval pipeline.",
+	"author": "echo.ai",
+	"homepage_url": "",
+	"repository_url": "",
+	"keywords": ["joplin-plugin", "llm", "knowledge-graph", "retrieval"],
+	"categories": ["personal knowledge management"],
+	"screenshots": [],
+	"icons": {},
+	"promo_tile": {}
+}

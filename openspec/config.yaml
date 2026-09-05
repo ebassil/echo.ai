@@ -1,0 +1,43 @@
+schema: spec-driven
+
+context: |
+  echo.ai (short: "echo") is a Joplin desktop plugin that brings LLM-powered
+  interaction to the user's notes: chat with note context, a knowledge graph
+  built from notes, and a composable retrieval pipeline.
+
+  Platform constraints:
+  - Joplin desktop plugin (Electron). TypeScript + Webpack build. Desktop only
+    (plugins do not run on mobile).
+  - Plugins run in a BrowserWindow with Node access. `joplin.require('sqlite3')`
+    exposes SQLite; other native modules are hard to bundle, so prefer pure-JS
+    libraries. Network via fetch is available.
+  - Note content is E2EE at rest in Joplin but the plugin API returns decrypted
+    content at runtime while the vault is unlocked.
+  - Index storage is a plaintext SQLite DB in the plugin data dir (decision:
+    Option A). It is never synced; the user's local filesystem is encrypted at
+    the OS level.
+
+  Architecture:
+  - Layered knowledge graph: nodes and edges carry a `layer` column
+    (structural | semantic). Structural edges from wiki-links, tags, backlinks;
+    semantic edges from local-LLM entity/relation extraction.
+  - Pipelines: structural indexing (markdown parse, chunking, FTS5, embeddings),
+    semantic extraction (local LLM, delta re-extraction with cascade),
+    orchestration (scheduling, triggering from UI + local CLI endpoint).
+  - Retrieval: parallel retrievers (BM25/FTS5, TF-IDF, fuzzy, dense kNN,
+    graph) fused by RRF, assembled into chat context within a token budget.
+  - LLM provider abstraction: local (Ollama, OpenAI-compatible /v1) primary,
+    remote OpenAI-compatible later. One interface for chat, embeddings,
+    and extraction.
+
+  Naming: "echo.ai" for the project/plugin name, "echo" as the short name
+  used in commands and settings keys (prefix: echo.*).
+
+rules:
+  proposal:
+    - Keep scope tight; each change is one implementable unit in the numbered
+      execution sequence.
+    - Note cross-change dependencies explicitly (later changes consume the
+      schema and pipeline services from earlier ones).
+    - Note the security posture (plaintext index, E2EE notes, local-first) in
+      any proposal that touches storage or networking.
