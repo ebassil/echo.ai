@@ -6,6 +6,9 @@ export const SETTINGS = {
 	baseUrl: 'echo.baseUrl',
 	model: 'echo.model',
 	connectionTimeoutSeconds: 'echo.connectionTimeoutSeconds',
+	chunkSize: 'echo.chunkSize',
+	chunkOverlap: 'echo.chunkOverlap',
+	embeddingBatchSize: 'echo.embeddingBatchSize',
 } as const;
 
 export const DEFAULT_SETTINGS: EchoSettings = {
@@ -13,6 +16,9 @@ export const DEFAULT_SETTINGS: EchoSettings = {
 	baseUrl: 'http://localhost:11434',
 	model: 'llama3',
 	connectionTimeoutSeconds: 15,
+	chunkSize: 2000,
+	chunkOverlap: 200,
+	embeddingBatchSize: 32,
 };
 
 const PROVIDER_OPTIONS: Record<string, string> = {
@@ -24,6 +30,9 @@ export interface EchoSettings {
 	baseUrl: string;
 	model: string;
 	connectionTimeoutSeconds: number;
+	chunkSize: number;
+	chunkOverlap: number;
+	embeddingBatchSize: number;
 }
 
 export interface SettingsResolution {
@@ -76,6 +85,39 @@ export async function registerSettings(): Promise<void> {
 			maximum: 120,
 			step: 1,
 		},
+		[SETTINGS.chunkSize]: {
+			value: DEFAULT_SETTINGS.chunkSize,
+			type: SettingItemType.Int,
+			public: true,
+			section: 'echo',
+			label: 'Chunk size (chars)',
+			description: 'Maximum characters per indexed chunk (heading-aware).',
+			minimum: 500,
+			maximum: 8000,
+			step: 100,
+		},
+		[SETTINGS.chunkOverlap]: {
+			value: DEFAULT_SETTINGS.chunkOverlap,
+			type: SettingItemType.Int,
+			public: true,
+			section: 'echo',
+			label: 'Chunk overlap (chars)',
+			description: 'Overlap in characters between consecutive chunks.',
+			minimum: 0,
+			maximum: 1000,
+			step: 10,
+		},
+		[SETTINGS.embeddingBatchSize]: {
+			value: DEFAULT_SETTINGS.embeddingBatchSize,
+			type: SettingItemType.Int,
+			public: true,
+			section: 'echo',
+			label: 'Embedding batch size',
+			description: 'Number of chunks per embedding request.',
+			minimum: 1,
+			maximum: 128,
+			step: 1,
+		},
 	});
 }
 
@@ -90,6 +132,9 @@ export async function resolveSettings(): Promise<SettingsResolution> {
 		connectionTimeoutSeconds: isValidTimeout(raw.connectionTimeoutSeconds)
 			? raw.connectionTimeoutSeconds
 			: DEFAULT_SETTINGS.connectionTimeoutSeconds,
+		chunkSize: isValidChunkSize(raw.chunkSize) ? raw.chunkSize : DEFAULT_SETTINGS.chunkSize,
+		chunkOverlap: isValidChunkOverlap(raw.chunkOverlap) ? raw.chunkOverlap : DEFAULT_SETTINGS.chunkOverlap,
+		embeddingBatchSize: isValidBatchSize(raw.embeddingBatchSize) ? raw.embeddingBatchSize : DEFAULT_SETTINGS.embeddingBatchSize,
 	};
 
 	return { settings, errors };
@@ -114,6 +159,18 @@ export function validateSettings(settings: EchoSettings): string[] {
 		errors.push('Connection test timeout must be between 1 and 120 seconds.');
 	}
 
+	if (!isValidChunkSize(settings.chunkSize)) {
+		errors.push('Chunk size must be between 500 and 8000 characters.');
+	}
+
+	if (!isValidChunkOverlap(settings.chunkOverlap)) {
+		errors.push('Chunk overlap must be between 0 and 1000 characters.');
+	}
+
+	if (!isValidBatchSize(settings.embeddingBatchSize)) {
+		errors.push('Embedding batch size must be between 1 and 128.');
+	}
+
 	return errors;
 }
 
@@ -127,6 +184,18 @@ function isValidModel(model: string): boolean {
 
 function isValidTimeout(value: number): boolean {
 	return typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= 120;
+}
+
+function isValidChunkSize(value: number): boolean {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 500 && value <= 8000;
+}
+
+function isValidChunkOverlap(value: number): boolean {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1000;
+}
+
+function isValidBatchSize(value: number): boolean {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= 128;
 }
 
 export async function watchSettings(): Promise<void> {
@@ -152,14 +221,23 @@ async function loadSettings(): Promise<EchoSettings> {
 		SETTINGS.baseUrl,
 		SETTINGS.model,
 		SETTINGS.connectionTimeoutSeconds,
+		SETTINGS.chunkSize,
+		SETTINGS.chunkOverlap,
+		SETTINGS.embeddingBatchSize,
 	]);
 	const timeout = values[SETTINGS.connectionTimeoutSeconds];
+	const chunkSize = values[SETTINGS.chunkSize];
+	const chunkOverlap = values[SETTINGS.chunkOverlap];
+	const batchSize = values[SETTINGS.embeddingBatchSize];
 	return {
 		provider: typeof values[SETTINGS.provider] === 'string' ? (values[SETTINGS.provider] as string) : DEFAULT_SETTINGS.provider,
 		baseUrl: typeof values[SETTINGS.baseUrl] === 'string' ? (values[SETTINGS.baseUrl] as string) : DEFAULT_SETTINGS.baseUrl,
 		model: typeof values[SETTINGS.model] === 'string' ? (values[SETTINGS.model] as string) : DEFAULT_SETTINGS.model,
 		connectionTimeoutSeconds:
 			typeof timeout === 'number' && Number.isFinite(timeout) ? timeout : DEFAULT_SETTINGS.connectionTimeoutSeconds,
+		chunkSize: typeof chunkSize === 'number' && Number.isFinite(chunkSize) ? chunkSize : DEFAULT_SETTINGS.chunkSize,
+		chunkOverlap: typeof chunkOverlap === 'number' && Number.isFinite(chunkOverlap) ? chunkOverlap : DEFAULT_SETTINGS.chunkOverlap,
+		embeddingBatchSize: typeof batchSize === 'number' && Number.isFinite(batchSize) ? batchSize : DEFAULT_SETTINGS.embeddingBatchSize,
 	};
 }
 
