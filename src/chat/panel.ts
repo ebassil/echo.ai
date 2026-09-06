@@ -20,6 +20,23 @@ export interface ChatPanel {
 export async function createChatPanel(options: { getProvider: () => LLMProvider }): Promise<ChatPanel> {
 	const handle = await joplin.views.panels.create(PANEL_ID);
 
+	// Joplin drops postMessage calls sent to the webview before the webview has
+	// loaded and registered its own onMessage handler ("no viewMessageHandler").
+	// Buffer outgoing messages and flush them once the webview signals readiness
+	// by posting its first message (the `init` handshake).
+	let webviewReady = false;
+	const pendingMessages: any[] = [];
+
+	const sendToWebview = (message: any): void => {
+		if (webviewReady) {
+			joplin.views.panels.postMessage(handle, message);
+		} else {
+			pendingMessages.push(message);
+			// Guard against unbounded growth if the webview never loads.
+			if (pendingMessages.length > 200) pendingMessages.shift();
+		}
+	};
+
 	const store = new ConversationStore({
 		run: (sql, params) => run(getDatabase(), sql, params ?? []),
 		all: (sql, params) => all(getDatabase(), sql, params ?? []),
@@ -36,7 +53,7 @@ export async function createChatPanel(options: { getProvider: () => LLMProvider 
 		isVaultLocked,
 		onEvent: (event) => {
 			const message = chatEventToWebviewMessage(event);
-			if (message) joplin.views.panels.postMessage(handle, message);
+			if (message) sendToWebview(message);
 		},
 	});
 
@@ -49,6 +66,16 @@ export async function createChatPanel(options: { getProvider: () => LLMProvider 
 	// postMessage calls sent before the webview has registered its own handler,
 	// so the webview's `init` message (posted on load) must always be caught.
 	await joplin.views.panels.onMessage(handle, async (message: any) => {
+		// Any message from the webview proves it has loaded and registered its
+		// handler — flush everything buffered so far.
+		if (!webviewReady) {
+			webviewReady = true;
+			for (const buffered of pendingMessages) {
+				joplin.views.panels.postMessage(handle, buffered);
+			}
+			pendingMessages.length = 0;
+		}
+
 		const command = parseWebviewMessage(message);
 		if (!command) return;
 		try {
@@ -57,7 +84,7 @@ export async function createChatPanel(options: { getProvider: () => LLMProvider 
 			console.error('[echo] chat panel command failed', error);
 			// Never fail silently: echo the failure back so the panel can show it.
 			try {
-				joplin.views.panels.postMessage(handle, {
+				sendToWebview({
 					type: 'status',
 					conversationId: null,
 					status: 'idle',

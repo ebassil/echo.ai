@@ -26,12 +26,13 @@ export async function registerOrchestrationCommands(): Promise<void> {
   try {
     const joplinAny: any = joplin as any;
     if (joplinAny.views?.menuItems?.create) {
-      await joplinAny.views.menuItems.create('echo.reindexAllMenu', 'echo.reindexAll', 'Tools');
-      await joplinAny.views.menuItems.create('echo.extractAllMenu', 'echo.extractAll', 'Tools');
-      await joplinAny.views.menuItems.create('echo.bothMenu', 'echo.reindexAndExtractAll', 'Tools');
+      // Joplin's MenuItemLocation enum uses lowercase values ("tools").
+      await joplinAny.views.menuItems.create('echo.reindexAllMenu', 'echo.reindexAll', 'tools');
+      await joplinAny.views.menuItems.create('echo.extractAllMenu', 'echo.extractAll', 'tools');
+      await joplinAny.views.menuItems.create('echo.bothMenu', 'echo.reindexAndExtractAll', 'tools');
     }
     if (joplinAny.views?.toolbarButtons?.create) {
-      await joplinAny.views.toolbarButtons.create('echo.reindexAllToolbar', 'echo.reindexAll', 'Tools');
+      await joplinAny.views.toolbarButtons.create('echo.reindexAllToolbar', 'echo.reindexAll', 'noteToolbar');
     }
   } catch (e) {
     console.warn('[echo] orchestration menu/toolbar registration failed', e);
