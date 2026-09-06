@@ -90,7 +90,7 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 	}
 	#messages {
 		flex: 0 1 auto;
-		min-height: 0;
+		min-height: 80px;
 		overflow-y: auto;
 		padding: 8px;
 		display: flex;
@@ -273,6 +273,8 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 	let state = null;
 	let tokenBuffer = {};
 	let currentErrorTimer = null;
+	let snapshotReceived = false;
+	let initAttempts = 0;
 
 	const messagesEl = document.getElementById('messages');
 	const inputEl = document.getElementById('input');
@@ -334,12 +336,29 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 	// ---- render call throws in some environment).
 	inputEl.addEventListener('input', autoGrow);
 
-	inputEl.addEventListener('keydown', (event) => {
+	// Only the chat message textarea (type=textarea, tagName=TEXTAREA) should
+	// react to keyboard events. Events targeting the <input type="text"> title
+	// field or any other control are ignored so Enter never misfires there.
+	function chatKeyTarget(event) {
+		return event.target === inputEl && (event.target.tagName === 'TEXTAREA' || event.target.type === 'textarea');
+	}
+
+	function chatKeyAction(event) {
 		const isEnter = event.key === 'Enter' || event.code === 'Enter';
 		if (isEnter && !event.shiftKey) {
 			event.preventDefault();
 			sendCurrentText();
 		}
+	}
+
+	inputEl.addEventListener('keydown', (event) => {
+		if (chatKeyTarget(event)) chatKeyAction(event);
+	});
+	inputEl.addEventListener('keypress', (event) => {
+		if (chatKeyTarget(event)) chatKeyAction(event);
+	});
+	inputEl.addEventListener('keyup', (event) => {
+		if (chatKeyTarget(event)) chatKeyAction(event);
 	});
 
 	sendBtn.addEventListener('click', sendCurrentText);
@@ -499,6 +518,7 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 		if (!message || !message.type) return;
 		switch (message.type) {
 			case 'snapshot':
+				snapshotReceived = true;
 				state = message.snapshot;
 				render();
 				break;
@@ -512,7 +532,21 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 		}
 	});
 
-	post({ type: 'init' });
+	// Init handshake with self-healing: keep re-posting until a snapshot arrives
+	// (covers a dropped init, a slow plugin, or the panel opening before the
+	// plugin finished its own startup).
+	function postInit() {
+		post({ type: 'init' });
+		if (!snapshotReceived) {
+			initAttempts++;
+			if (initAttempts < 10) {
+				setTimeout(postInit, 2000);
+			} else {
+				showError('echo chat: no response from the plugin. Check the Joplin log.');
+			}
+		}
+	}
+	postInit();
 </script>
 </body>
 </html>`;

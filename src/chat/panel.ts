@@ -28,6 +28,8 @@ export async function createChatPanel(options: { getProvider: () => LLMProvider 
 	const pendingMessages: any[] = [];
 
 	const sendToWebview = (message: any): void => {
+		// Skip token-level noise for diagnostics.
+		if (message?.type !== 'token') console.info('[echo] chat → webview', message?.type);
 		if (webviewReady) {
 			joplin.views.panels.postMessage(handle, message);
 		} else {
@@ -66,10 +68,13 @@ export async function createChatPanel(options: { getProvider: () => LLMProvider 
 	// postMessage calls sent before the webview has registered its own handler,
 	// so the webview's `init` message (posted on load) must always be caught.
 	await joplin.views.panels.onMessage(handle, async (message: any) => {
+		console.info('[echo] chat ← webview', typeof message === 'string' ? message : message?.type, message);
+
 		// Any message from the webview proves it has loaded and registered its
 		// handler — flush everything buffered so far.
 		if (!webviewReady) {
 			webviewReady = true;
+			console.info(`[echo] chat: webview ready, flushing ${pendingMessages.length} buffered message(s)`);
 			for (const buffered of pendingMessages) {
 				joplin.views.panels.postMessage(handle, buffered);
 			}

@@ -108,7 +108,8 @@ export class OllamaProvider implements LLMProvider {
 
 	async listModels(): Promise<string[]> {
 		try {
-			const response = await fetch(this.endpoint('/models'));
+			// Never block chat startup: time out the model listing quickly.
+			const response = await fetch(this.endpoint('/models'), { signal: AbortSignal.timeout(5000) });
 			if (!response.ok) return [];
 			const data = await response.json();
 			const models: string[] = (data?.data ?? [])
