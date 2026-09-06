@@ -41,7 +41,10 @@ export interface PipelineRunOptions {
   onProgress?: (processed: number, total: number, currentNoteId: string) => void;
   force?: boolean;
   cascade?: { mode: 'lazy' | 'eager'; depth?: number } | false;
+  trigger?: TriggerKind;
 }
+
+export const PROVIDER_DOWN_MESSAGE = 'Provider unreachable — indexing deferred';
 
 export interface Pipeline {
   run(noteIds: string[], options: PipelineRunOptions): Promise<PipelineResult>;

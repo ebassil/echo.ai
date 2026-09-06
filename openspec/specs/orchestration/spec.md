@@ -45,7 +45,7 @@ The system SHALL expose Joplin commands (menu and toolbar actions) that trigger 
 - **THEN** all orchestration commands are registered via `joplin.commands.register` and visible in the command palette
 
 ### Requirement: Trigger framework — event triggers
-The system SHALL listen for Joplin note lifecycle events and vault state transitions and trigger debounced incremental pipeline runs, delegating watch behavior previously owned by `indexing/watch.ts`.
+The system SHALL listen for Joplin note lifecycle events and vault state transitions and trigger debounced incremental pipeline runs through the runner, delegating watch behavior previously owned by `indexing/watch.ts`. This framework is the single owner of Joplin event watching: no legacy watcher runs in parallel.
 
 #### Scenario: Note added triggers structural reindex
 - **WHEN** Joplin emits a note-added event for note N
@@ -70,6 +70,25 @@ The system SHALL listen for Joplin note lifecycle events and vault state transit
 #### Scenario: Event loop suppression for enrichment writes
 - **WHEN** structural enrichment writes to a note via `joplin.data.put`
 - **THEN** the trigger framework suppresses enqueuing a reindex for that note id within the suppression window (e.g., 5 seconds), delegating to the same in-flight set mechanism as `semantic/enrichment.ts`
+
+#### Scenario: Single trigger owner
+- **WHEN** the plugin starts
+- **THEN** exactly one event-listener registration path is active (the orchestration trigger framework) and the legacy `indexing/watch.ts` watcher is not started, so a single Joplin note event enqueues at most one scoped run
+
+### Requirement: Automatic runs defer when the provider is unreachable
+The system SHALL gate automatic pipeline runs (event, schedule, startup triggers) behind the provider health gate so an unreachable LLM provider aborts the run up front with one consolidated status instead of issuing failed requests per note.
+
+#### Scenario: Automatic run aborts early on provider-down
+- **WHEN** an automatic trigger starts a pipeline run and the provider health gate reports the provider `down`
+- **THEN** the run is aborted up front with a single "provider unreachable — indexing deferred" status and no per-note index mutations are performed
+
+#### Scenario: Schedule and event runs skip while down
+- **WHEN** the provider is `down` and an event or schedule tick fires
+- **THEN** the run is deferred (not re-queued in a loop) and waits for a later automatic run once the gate reports the provider `up`
+
+#### Scenario: Manual run still executes
+- **WHEN** a manual trigger starts a run while the provider is `down`
+- **THEN** the run executes structural-only work and defers embedding per the provider-health specification instead of aborting
 
 ### Requirement: Trigger framework — time-based scheduler
 The system SHALL provide a time-based scheduler that periodically enqueues pipeline runs on a configurable interval or cron-style schedule.

@@ -6,7 +6,6 @@ export * from './delta';
 export * from './persist';
 export * from './scopes';
 export * from './pipeline';
-export * from './events';
 export * from './watch';
 export * from './vault';
 export * from './graphWriter';

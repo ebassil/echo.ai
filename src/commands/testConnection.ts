@@ -1,6 +1,7 @@
 import joplin from 'api';
 import { ToastType } from 'api/types';
 import type { LLMProvider, ConnectionTestResult } from '../llm/provider';
+import { providerHealth } from '../llm/health';
 import { SETTINGS } from '../settings/registry';
 import { errorMessage } from '../util/errors';
 
@@ -29,6 +30,9 @@ export async function registerTestConnectionCommand(provider: LLMProvider): Prom
 				const timeoutSeconds = await readTimeoutSeconds();
 				await runTestConnection(provider, timeoutSeconds);
 			} finally {
+				// A fresh manual probe just ran: drop cached health so the next
+				// automatic check re-probes with current reachability.
+				providerHealth.invalidate();
 				running = false;
 			}
 		},

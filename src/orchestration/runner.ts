@@ -251,6 +251,7 @@ async function processNext(): Promise<void> {
           signal: next.signal,
           onProgress: onProgressWrapped,
           force: next.force,
+          trigger: next.trigger,
         });
         if (next.signal.aborted) throw new Error('Cancelled');
         aggregate.notesProcessed += structuralResult.notesProcessed;
@@ -263,6 +264,7 @@ async function processNext(): Promise<void> {
           onProgress: onProgressWrapped,
           force: next.force,
           cascade: next.cascade,
+          trigger: next.trigger,
         });
         if (next.signal.aborted) throw new Error('Cancelled');
         aggregate.notesProcessed += semanticResult.notesProcessed;
@@ -277,6 +279,7 @@ async function processNext(): Promise<void> {
           onProgress: onProgressWrapped,
           force: next.force,
           cascade: next.cascade,
+          trigger: next.trigger,
         });
         if (next.signal.aborted) throw new Error('Cancelled');
         aggregate = result;

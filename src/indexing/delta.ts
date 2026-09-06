@@ -1,19 +1,21 @@
 import { getDatabase, run, all } from '../storage/db';
 
+export const RETRY_COOLDOWN_MS = 600_000;
+
 export interface DeltaDecision {
 	noteId: string;
 	contentHash: string;
 	shouldReprocess: boolean;
-	reason: 'no_state' | 'hash_changed' | 'hash_equal' | 'force' | 'model_changed' | 'deleted';
+	reason: 'no_state' | 'hash_changed' | 'hash_equal' | 'force' | 'model_changed' | 'deleted' | 'cooldown';
 }
 
 export async function getIndexState(
 	db: any,
 	noteId: string,
-): Promise<{ content_hash: string; structural_status: string } | null> {
-	const rows = await all<{ content_hash: string; structural_status: string }>(
+): Promise<{ content_hash: string; structural_status: string; updated_at: string | null; error: string | null } | null> {
+	const rows = await all<{ content_hash: string; structural_status: string; updated_at: string | null; error: string | null }>(
 		db,
-		`SELECT content_hash, structural_status FROM index_state WHERE note_id = ?`,
+		`SELECT content_hash, structural_status, updated_at, error FROM index_state WHERE note_id = ?`,
 		[noteId],
 	);
 	return rows[0] ?? null;
@@ -23,7 +25,7 @@ export async function shouldReprocess(
 	db: any,
 	noteId: string,
 	currentHash: string,
-	options: { force?: boolean; expectedModel?: string } = {},
+	options: { force?: boolean; expectedModel?: string; retryCooldownMs?: number } = {},
 ): Promise<DeltaDecision> {
 	if (options.force) {
 		return { noteId, contentHash: currentHash, shouldReprocess: true, reason: 'force' };
@@ -38,8 +40,19 @@ export async function shouldReprocess(
 		return { noteId, contentHash: currentHash, shouldReprocess: true, reason: 'hash_changed' };
 	}
 
+	if (state.structural_status === 'failed') {
+		// Genuine failures retry after a cooldown to avoid a retry treadmill on
+		// the same bad state. `pending` notes (e.g. left by a provider outage)
+		// are retried immediately so recovery requires no manual action.
+		const cooldownMs = options.retryCooldownMs ?? RETRY_COOLDOWN_MS;
+		if (state.updated_at && Date.now() - new Date(state.updated_at).getTime() < cooldownMs) {
+			return { noteId, contentHash: currentHash, shouldReprocess: false, reason: 'cooldown' };
+		}
+		return { noteId, contentHash: currentHash, shouldReprocess: true, reason: 'hash_changed' };
+	}
+
 	if (state.structural_status !== 'success') {
-		// Previously failed or pending, retry
+		// Previously pending (e.g., provider was down); retry.
 		return { noteId, contentHash: currentHash, shouldReprocess: true, reason: 'hash_changed' };
 	}
 

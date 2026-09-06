@@ -1,7 +1,9 @@
 import joplin from 'api';
 import { getDatabase, run } from '../storage/db';
 import type { LLMProvider } from '../llm/provider';
+import { providerHealth } from '../llm/health';
 import { errorMessage } from '../util/errors';
+import { createRunLogger } from '../util/runLogger';
 import { computeContentHash } from './hash';
 import { chunkNote } from './chunker';
 import { embedChunks } from './embedder';
@@ -70,6 +72,31 @@ async function processSingleNote(
 		overlapChars: options.overlapChars,
 	});
 
+	// One connectivity gate per note (cached by the health gate): when the
+	// provider is unreachable, defer the note without touching prior index data
+	// (chunks, embeddings, graph stay intact) and record `pending` so the run is
+	// not poisoned by the outage.
+	if (chunks.length > 0 && (await providerHealth.check(provider)) === 'down') {
+		try {
+			await withPerNoteTransaction(db, async () => {
+				await upsertNotesSnapshot(
+					db,
+					{
+						id: note.id,
+						title: note.title ?? '',
+						parent_id: note.parent_id ?? null,
+						contentHash,
+						createdAt: note.created_time ? new Date(note.created_time).toISOString() : null,
+						updatedAt: note.updated_time ? new Date(note.updated_time).toISOString() : null,
+					},
+					'pending',
+				);
+				await upsertIndexState(db, note.id, contentHash, 'pending', null);
+			});
+		} catch {}
+		return { skipped: false, error: undefined };
+	}
+
 	let vectors: number[][] | null = null;
 	let modelName = (provider as any).model ?? 'unknown';
 	let dims = 0;
@@ -86,9 +113,29 @@ async function processSingleNote(
 			dims = emb.dims;
 		} catch (error) {
 			const message = errorMessage(error);
-			// Record failure but still persist chunks/graph? Spec says isolate failure.
-			// We mark failed and do not delete previous data? But reprocess should be atomic.
-			// For now, persist chunks and mark failed, allow retry.
+			// Re-check the gate (cached): if the provider dropped after the run
+			// started, defer instead of marking the note failed.
+			if ((await providerHealth.check(provider)) === 'down') {
+				try {
+					await withPerNoteTransaction(db, async () => {
+						await upsertNotesSnapshot(
+							db,
+							{
+								id: note.id,
+								title: note.title ?? '',
+								parent_id: note.parent_id ?? null,
+								contentHash,
+								createdAt: note.created_time ? new Date(note.created_time).toISOString() : null,
+								updatedAt: note.updated_time ? new Date(note.updated_time).toISOString() : null,
+							},
+							'pending',
+						);
+						await upsertIndexState(db, note.id, contentHash, 'pending', null);
+					});
+				} catch {}
+				return { skipped: false, error: undefined };
+			}
+			// Genuine per-note failure (provider is up): persist chunks, mark failed, allow cooldown-bound retry.
 			try {
 				await withPerNoteTransaction(db, async () => {
 					await deleteChunksAndEdgesForNote(db, note.id);
@@ -317,12 +364,17 @@ export function isIndexingRunning(): boolean {
 }
 
 // ---- Orchestration Pipeline adapter ----
+import { PROVIDER_DOWN_MESSAGE } from '../orchestration/types';
 import type { Pipeline, PipelineResult } from '../orchestration/types';
 
 async function runStructuralFromNoteIds(
 	noteIds: string[],
 	provider: LLMProvider,
-	options: IndexOptions & { signal?: AbortSignal; onProgressDetailed?: (p: number, t: number, id: string) => void },
+	options: IndexOptions & {
+		signal?: AbortSignal;
+		onProgressDetailed?: (p: number, t: number, id: string) => void;
+		trigger?: import('../orchestration/types').TriggerKind;
+	},
 ): Promise<PipelineResult> {
 	const result: PipelineResult = {
 		notesProcessed: 0,
@@ -336,7 +388,20 @@ async function runStructuralFromNoteIds(
 	if (await isVaultLocked()) {
 		return { ...result, errors: [{ noteId: '__vault__', message: 'Indexing paused: vault is locked' }] };
 	}
+
+	// Provider health gate: automatic runs abort up front when the provider is
+	// unreachable, recording a single consolidated status instead of issuing a
+	// failed request per note. Manual/forced runs still proceed (per-note guarded
+	// embedding in processSingleNote defers notes while the provider is down).
+	const trigger = options.trigger;
+	if (!options.force && trigger !== undefined && trigger !== 'manual') {
+		if ((await providerHealth.check(provider)) === 'down') {
+			return { ...result, errors: [{ noteId: '__provider__', message: PROVIDER_DOWN_MESSAGE }] };
+		}
+	}
+
 	const stats = { chunksCreated: 0, unresolvedLinks: 0 };
+	const logger = createRunLogger();
 	let processed = 0;
 	for (const noteId of noteIds) {
 		if (options.signal?.aborted) {
@@ -366,7 +431,10 @@ async function runStructuralFromNoteIds(
 		if (outcome.skipped) result.skipped++;
 		else {
 			result.notesProcessed++;
-			if (outcome.error) result.errors.push({ noteId, message: outcome.error });
+			if (outcome.error) {
+				result.errors.push({ noteId, message: outcome.error });
+				logger.warn(`[echo] indexing failed for ${noteId}: ${outcome.error}`);
+			}
 		}
 		processed++;
 		if (options.onProgress) options.onProgress(processed, noteIds.length);
@@ -379,13 +447,14 @@ async function runStructuralFromNoteIds(
 
 export function createStructuralPipeline(provider: LLMProvider, baseOptions: IndexOptions = {}): Pipeline {
 	return {
-		async run(noteIds: string[], opts: { signal?: AbortSignal; onProgress?: (p: number, t: number, id: string) => void; force?: boolean }): Promise<PipelineResult> {
+		async run(noteIds: string[], opts: { signal?: AbortSignal; onProgress?: (p: number, t: number, id: string) => void; force?: boolean; trigger?: import('../orchestration/types').TriggerKind }): Promise<PipelineResult> {
 			return runStructuralFromNoteIds(noteIds, provider, {
 				...baseOptions,
 				force: opts.force ?? baseOptions.force,
 				onProgress: undefined,
 				onProgressDetailed: opts.onProgress,
 				signal: opts.signal,
+				trigger: opts.trigger,
 			});
 		},
 	};

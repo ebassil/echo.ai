@@ -495,6 +495,13 @@ export async function watchSettings(): Promise<void> {
 		const relevant = Object.values(SETTINGS).some((key) => changedKeys.includes(key));
 		if (!relevant) return;
 
+		// Provider endpoint or model changed: provider health cache no longer reflects reality.
+		if (changedKeys.includes(SETTINGS.baseUrl) || changedKeys.includes(SETTINGS.model)) {
+			import('../llm/health')
+				.then(({ providerHealth }) => providerHealth.invalidate())
+				.catch(() => {});
+		}
+
 		void loadSettings().then((settings) => {
 			const errors = validateSettings(settings);
 			if (errors.length === 0) return;

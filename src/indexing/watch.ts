@@ -1,90 +1,32 @@
-import type { LLMProvider } from '../llm/provider';
-import { createIndexingEvents } from './events';
-import { indexAll } from './pipeline';
-import { isVaultLocked } from './vault';
-import type { EventsHandle } from './events';
+import { getOrchestrationTriggers } from '../plugin/runtime';
+import type { TriggersHandle } from '../orchestration/triggers';
 
-let handle: EventsHandle | null = null;
-let vaultPollTimer: ReturnType<typeof setInterval> | null = null;
-let wasLocked: boolean | null = null;
+// Legacy watcher (indexing/watch.ts + events.ts) was superseded by the
+// orchestration trigger framework (orchestration/triggers.ts). This module is
+// kept as a thin shim so existing callers and the IndexingService contract keep
+// working, but all watch behavior is delegated to the single orchestration
+// trigger/listener path. Exactly one event-listener registration is active at
+// runtime.
 
 export interface WatchOptions {
-	provider: LLMProvider;
+	provider?: unknown;
 	debounceMs?: number;
 	onUnlock?: () => Promise<void>;
 }
 
-export async function startWatching(options: WatchOptions): Promise<EventsHandle> {
-	if (handle) return handle;
-
-	handle = createIndexingEvents({ provider: options.provider, debounceMs: options.debounceMs });
-
-	// Startup catch-up: delta scan for changes that occurred while plugin was off
-	// Defer a tick to allow DB/provider to settle
-	setTimeout(async () => {
-		if (await isVaultLocked()) {
-			wasLocked = true;
-			console.info('[echo] indexing watch: vault locked at startup, deferring catch-up');
-			return;
-		}
-		wasLocked = false;
-		try {
-			console.info('[echo] indexing watch: startup catch-up scan');
-			await indexAll(options.provider);
-		} catch (e) {
-			console.warn('[echo] startup catch-up failed', e);
-		}
-	}, 1000);
-
-	// Vault lock polling: detect transition from locked -> unlocked
-	vaultPollTimer = setInterval(async () => {
-		const locked = await isVaultLocked();
-		if (wasLocked === true && locked === false) {
-			console.info('[echo] vault unlocked, flushing queued indexing and running catch-up');
-			try {
-				await handle?.flush();
-			} catch {}
-			try {
-				await indexAll(options.provider);
-			} catch (e) {
-				console.warn('[echo] catch-up after unlock failed', e);
-			}
-			// Flush semantic deferred queue
-			try {
-				const semantic = await import('../semantic/index');
-				if (semantic.flushDeferredQueue) await semantic.flushDeferredQueue();
-			} catch {}
-			if (options.onUnlock) {
-				try {
-					await options.onUnlock();
-				} catch {}
-			}
-		}
-		wasLocked = locked;
-	}, 3000);
-
-	// Initialize wasLocked
-	wasLocked = await isVaultLocked();
-
-	return handle;
-}
-
-export async function stopWatching(): Promise<void> {
-	if (vaultPollTimer) {
-		clearInterval(vaultPollTimer);
-		vaultPollTimer = null;
-	}
-	if (handle) {
-		handle.dispose();
-		handle = null;
-	}
-	wasLocked = null;
-}
-
-export function getWatchHandle(): EventsHandle | null {
-	return handle;
+export function getWatchHandle(): TriggersHandle | null {
+	return getOrchestrationTriggers();
 }
 
 export async function flushWatchQueue(): Promise<void> {
-	if (handle) await handle.flush();
+	const triggers = getOrchestrationTriggers();
+	if (triggers) await triggers.flush();
+}
+
+export async function startWatching(_options: WatchOptions = {}): Promise<TriggersHandle | null> {
+	return getOrchestrationTriggers();
+}
+
+export async function stopWatching(): Promise<void> {
+	// No-op: orchestration triggers are disposed by runtime().stop().
 }

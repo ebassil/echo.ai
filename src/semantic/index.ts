@@ -1,11 +1,13 @@
 import joplin from 'api';
 import { getDatabase, run, all } from '../storage/db';
 import { errorMessage } from '../util/errors';
+import { createRunLogger } from '../util/runLogger';
 import { computeContentHash } from '../indexing/hash';
 import { chunkNote } from '../indexing/chunker';
 import { resolveScope, fetchNotesPaginated } from '../indexing/scopes';
 import type { Scope } from '../indexing/scopes';
 import { isVaultLocked } from '../indexing/vault';
+import { providerHealth } from '../llm/health';
 import { shouldReprocessSemantic, resolveExpectedExtractionModel } from './delta';
 import { extractNote as extractViaPipeline, resolveExtractorOptions } from './extractor';
 import { persistSemanticForNote, upsertSemanticIndexState } from './persist';
@@ -73,6 +75,15 @@ async function processSingleSemanticNote(
 		return { skipped: false, error: 'Vault locked, deferred' };
 	}
 
+	// Provider health gate: when unreachable, defer the note (keep prior semantic
+	// data intact, record `pending`) instead of flagging it failed.
+	if ((await providerHealth.check(provider)) === 'down') {
+		try {
+			await upsertSemanticIndexState(db, note.id, expectedModel, 'pending', null);
+		} catch {}
+		return { skipped: false, error: undefined };
+	}
+
 	// Capture before entity ids for cascade
 	const beforeEntityIds = await getEntityIdsForNote(db, note.id).catch(() => [] as string[]);
 
@@ -88,6 +99,12 @@ async function processSingleSemanticNote(
 		extraction = await extractViaPipeline(provider, note, extractorOptions);
 	} catch (e) {
 		const message = errorMessage(e);
+		if ((await providerHealth.check(provider)) === 'down') {
+			try {
+				await upsertSemanticIndexState(db, note.id, expectedModel, 'pending', null);
+			} catch {}
+			return { skipped: false, error: undefined };
+		}
 		try {
 			await upsertSemanticIndexState(db, note.id, expectedModel, 'failed', message);
 		} catch {}
@@ -134,6 +151,12 @@ async function processSingleSemanticNote(
 		return { skipped: false, affectedEntityIds: affected };
 	} catch (e) {
 		const message = errorMessage(e);
+		if ((await providerHealth.check(provider)) === 'down') {
+			try {
+				await upsertSemanticIndexState(db, note.id, expectedModel, 'pending', null);
+			} catch {}
+			return { skipped: false, error: undefined };
+		}
 		try {
 			await upsertSemanticIndexState(db, note.id, expectedModel, 'failed', message);
 		} catch {}
@@ -352,13 +375,18 @@ export async function purgeSemanticForDeletedNote(noteId: string): Promise<void>
 }
 
 // ---- Orchestration Pipeline adapter ----
+import { PROVIDER_DOWN_MESSAGE } from '../orchestration/types';
 import type { Pipeline, PipelineResult } from '../orchestration/types';
 
 async function runSemanticFromNoteIds(
 	noteIds: string[],
 	provider: any,
 	settings: any,
-	options: SemanticIndexOptions & { signal?: AbortSignal; onProgressDetailed?: (p: number, t: number, id: string) => void },
+	options: SemanticIndexOptions & {
+		signal?: AbortSignal;
+		onProgressDetailed?: (p: number, t: number, id: string) => void;
+		trigger?: import('../orchestration/types').TriggerKind;
+	},
 ): Promise<PipelineResult> {
 	const db = getDatabase();
 	if (await isVaultLocked()) {
@@ -371,8 +399,27 @@ async function runSemanticFromNoteIds(
 			errors: [{ noteId: '__vault__', message: 'Semantic indexing paused: vault is locked' }],
 		};
 	}
+
+	// Provider health gate: automatic runs abort up front with one consolidated
+	// status instead of issuing a failed request per note. Manual/forced runs
+	// still proceed (per-note guarded extraction in processSingleSemanticNote).
+	const trigger = options.trigger;
+	if (!options.force && trigger !== undefined && trigger !== 'manual') {
+		if ((await providerHealth.check(provider)) === 'down') {
+			return {
+				notesProcessed: 0,
+				chunksCreated: 0,
+				entitiesCreated: 0,
+				relationsCreated: 0,
+				skipped: 0,
+				errors: [{ noteId: '__provider__', message: PROVIDER_DOWN_MESSAGE }],
+			};
+		}
+	}
+
 	const stats = { entitiesCreated: 0, relationsCreated: 0 };
 	const embeddingCache = new Map<string, number[]>();
+	const logger = createRunLogger();
 	const result: PipelineResult = {
 		notesProcessed: 0,
 		chunksCreated: 0,
@@ -408,7 +455,10 @@ async function runSemanticFromNoteIds(
 		if (outcome.skipped) result.skipped++;
 		else {
 			result.notesProcessed++;
-			if (outcome.error) result.errors.push({ noteId, message: outcome.error });
+			if (outcome.error) {
+				result.errors.push({ noteId, message: outcome.error });
+				logger.warn(`[echo] semantic extraction failed for ${noteId}: ${outcome.error}`);
+			}
 			else {
 				const cascadeOptions = resolveCascadeOptions(settings, options.cascade === false ? { mode: 'lazy' } : (options.cascade as any));
 				if (cascadeOptions.mode === 'lazy') {
@@ -422,7 +472,10 @@ async function runSemanticFromNoteIds(
 						if (res.skipped) result.skipped++;
 						else {
 							result.notesProcessed++;
-							if (res.error) result.errors.push({ noteId: nid, message: res.error });
+							if (res.error) {
+								result.errors.push({ noteId: nid, message: res.error });
+								logger.warn(`[echo] semantic extraction failed for ${nid}: ${res.error}`);
+							}
 						}
 					});
 				}
@@ -439,12 +492,13 @@ async function runSemanticFromNoteIds(
 
 export function createSemanticPipeline(provider: any, settings: any): Pipeline {
 	return {
-		async run(noteIds: string[], opts: { signal?: AbortSignal; onProgress?: (p: number, t: number, id: string) => void; force?: boolean; cascade?: { mode: 'lazy' | 'eager'; depth?: number } | false }): Promise<PipelineResult> {
+		async run(noteIds: string[], opts: { signal?: AbortSignal; onProgress?: (p: number, t: number, id: string) => void; force?: boolean; cascade?: { mode: 'lazy' | 'eager'; depth?: number } | false; trigger?: import('../orchestration/types').TriggerKind }): Promise<PipelineResult> {
 			return runSemanticFromNoteIds(noteIds, provider, settings, {
 				force: opts.force,
 				cascade: opts.cascade,
 				signal: opts.signal,
 				onProgressDetailed: opts.onProgress,
+				trigger: opts.trigger,
 			});
 		},
 	};

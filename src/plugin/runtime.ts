@@ -7,7 +7,7 @@ import { createProvider } from '../llm/factory';
 import type { EchoSettings } from '../settings/registry';
 import type { LLMProvider } from '../llm/provider';
 import { errorMessage } from '../util/errors';
-import { startWatching, stopWatching, getWatchHandle, flushWatchQueue } from '../indexing/watch';
+import { stopWatching, getWatchHandle, flushWatchQueue } from '../indexing/watch';
 import { indexNote as indexNoteFn, indexFolder as indexFolderFn, indexAll as indexAllFn, purgeDeletedNote, isIndexingRunning } from '../indexing/pipeline';
 import { createStructuralPipeline } from '../indexing/pipeline';
 import { createSemanticPipeline } from '../semantic/index';
@@ -215,16 +215,7 @@ export async function start(): Promise<void> {
 			console.warn('[echo] startup catch-up enqueue failed', e);
 		}
 
-		// Start legacy structural indexing watcher for backwards compat (will delegate to orchestration triggers)
-		// Keep for now but orchestration triggers is canonical
-		try {
-			await startWatching({ provider });
-			console.info('[echo] indexing watcher started (legacy shim)');
-		} catch (error) {
-			console.warn('[echo] indexing watcher failed to start', error);
-		}
-
-		// Start chat panel (non-fatal: chat is optional if the panel API is unavailable)
+		// Chat panel start (non-fatal: chat is optional if the panel API is unavailable)
 		try {
 			chatPanel = await createChatPanel({ getProvider });
 			console.info('[echo] chat panel started');
