@@ -242,6 +242,44 @@ const migrations: Migration[] = [
 			await run(dbConnection, `UPDATE edges SET source = 'joplin' WHERE source IS NULL`);
 		},
 	},
+	{
+		version: 4,
+		apply: async (dbConnection: any) => {
+			// Chat conversations and messages (private to the chat capability)
+			await run(dbConnection, 'PRAGMA foreign_keys = ON');
+
+			await run(
+				dbConnection,
+				`CREATE TABLE IF NOT EXISTS conversations (
+					id TEXT PRIMARY KEY,
+					title TEXT,
+					model TEXT NOT NULL,
+					system_prompt TEXT NOT NULL,
+					notes_on INTEGER NOT NULL DEFAULT 1,
+					retrieval_toggles TEXT NOT NULL DEFAULT '{}',
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL
+				)`,
+			);
+
+			await run(
+				dbConnection,
+				`CREATE TABLE IF NOT EXISTS conversation_messages (
+					id TEXT PRIMARY KEY,
+					conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+					role TEXT NOT NULL,
+					content TEXT NOT NULL,
+					citations TEXT NOT NULL DEFAULT '[]',
+					created_at TEXT NOT NULL,
+					seq INTEGER NOT NULL,
+					UNIQUE(conversation_id, seq)
+				)`,
+			);
+
+			await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_conversation_messages_conv ON conversation_messages(conversation_id, seq)`);
+			await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at)`);
+		},
+	},
 ];
 
 export const LATEST_SCHEMA_VERSION: number = migrations[migrations.length - 1].version;

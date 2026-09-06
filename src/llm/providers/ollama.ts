@@ -9,6 +9,7 @@ import type {
 	LLMProvider,
 	TestConnectionOptions,
 } from '../provider';
+import { parseSSEStream } from '../sse';
 
 export interface OllamaProviderConfig {
 	baseUrl: string;
@@ -38,6 +39,7 @@ export class OllamaProvider implements LLMProvider {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(body),
+			signal: options?.signal,
 		});
 		await ensureOk(response, this.baseUrl);
 
@@ -47,6 +49,30 @@ export class OllamaProvider implements LLMProvider {
 			throw new Error(`Unexpected chat response from ${this.baseUrl}: missing message content`);
 		}
 		return content;
+	}
+
+	async *chatStream(messages: ChatMessage[], options?: ChatOptions): AsyncGenerator<string, void, void> {
+		const body: Record<string, any> = {
+			model: this.model,
+			messages,
+			stream: true,
+		};
+		if (options?.temperature !== undefined) body.temperature = options.temperature;
+		if (options?.maxTokens !== undefined) body.max_tokens = options.maxTokens;
+
+		const response = await fetch(this.endpoint('/chat/completions'), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+			signal: options?.signal,
+		});
+		await ensureOk(response, this.baseUrl);
+
+		if (!response.body) {
+			throw new Error(`Unexpected chat response from ${this.baseUrl}: streaming body unavailable`);
+		}
+
+		yield* parseSSEStream(response.body);
 	}
 
 	async embeddings(texts: string[]): Promise<number[][]> {
@@ -78,6 +104,20 @@ export class OllamaProvider implements LLMProvider {
 
 		const raw = await this.chat(messages, { temperature: 0 });
 		return parseExtraction(raw);
+	}
+
+	async listModels(): Promise<string[]> {
+		try {
+			const response = await fetch(this.endpoint('/models'));
+			if (!response.ok) return [];
+			const data = await response.json();
+			const models: string[] = (data?.data ?? [])
+				.map((item: any) => (typeof item?.id === 'string' ? item.id : ''))
+				.filter((id: string) => id.length > 0);
+			return models;
+		} catch {
+			return [];
+		}
 	}
 
 	async testConnection(options?: TestConnectionOptions): Promise<ConnectionTestResult> {

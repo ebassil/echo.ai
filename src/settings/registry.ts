@@ -19,6 +19,9 @@ export const SETTINGS = {
 	semanticCascadeDepth: 'echo.semanticCascadeDepth',
 	semanticCascadeFanoutCap: 'echo.semanticCascadeFanoutCap',
 	enrichmentEnabled: 'echo.enrichmentEnabled',
+	chatSystemPrompt: 'echo.chatSystemPrompt',
+	chatModel: 'echo.chatModel',
+	chatHistoryBudget: 'echo.chatHistoryBudget',
 } as const;
 
 export const DEFAULT_SETTINGS: EchoSettings = {
@@ -39,6 +42,11 @@ export const DEFAULT_SETTINGS: EchoSettings = {
 	semanticCascadeDepth: 1,
 	semanticCascadeFanoutCap: 50,
 	enrichmentEnabled: false,
+	chatSystemPrompt:
+		'You are echo, a helpful AI assistant inside the user\'s Joplin notes. ' +
+		'When note context is provided, answer using it and cite the relevant notes with the [n] markers.',
+	chatModel: '',
+	chatHistoryBudget: 8000,
 };
 
 const PROVIDER_OPTIONS: Record<string, string> = {
@@ -63,6 +71,9 @@ export interface EchoSettings {
 	semanticCascadeDepth: number;
 	semanticCascadeFanoutCap: number;
 	enrichmentEnabled: boolean;
+	chatSystemPrompt: string;
+	chatModel: string;
+	chatHistoryBudget: number;
 }
 
 export interface SettingsResolution {
@@ -249,6 +260,33 @@ export async function registerSettings(): Promise<void> {
 			label: 'Enable structural enrichment',
 			description: 'When enabled, writes suggested tags/wiki-links back to notes.',
 		},
+		[SETTINGS.chatSystemPrompt]: {
+			value: DEFAULT_SETTINGS.chatSystemPrompt,
+			type: SettingItemType.String,
+			public: true,
+			section: 'echo',
+			label: 'Chat system prompt',
+			description: 'Default system prompt used for chat conversations (overridable per conversation).',
+		},
+		[SETTINGS.chatModel]: {
+			value: DEFAULT_SETTINGS.chatModel,
+			type: SettingItemType.String,
+			public: true,
+			section: 'echo',
+			label: 'Chat model (optional)',
+			description: 'Model used for chat; falls back to Model name if empty.',
+		},
+		[SETTINGS.chatHistoryBudget]: {
+			value: DEFAULT_SETTINGS.chatHistoryBudget,
+			type: SettingItemType.Int,
+			public: true,
+			section: 'echo',
+			label: 'Chat history budget (tokens)',
+			description: 'Context-window cap for chat history trimming; approximate, uses the chars/4 estimator.',
+			minimum: 1000,
+			maximum: 64000,
+			step: 500,
+		},
 	});
 }
 
@@ -281,6 +319,13 @@ export async function resolveSettings(): Promise<SettingsResolution> {
 		semanticCascadeDepth: isValidCascadeDepth(raw.semanticCascadeDepth) ? raw.semanticCascadeDepth : DEFAULT_SETTINGS.semanticCascadeDepth,
 		semanticCascadeFanoutCap: isValidFanoutCap(raw.semanticCascadeFanoutCap) ? raw.semanticCascadeFanoutCap : DEFAULT_SETTINGS.semanticCascadeFanoutCap,
 		enrichmentEnabled: typeof raw.enrichmentEnabled === 'boolean' ? raw.enrichmentEnabled : DEFAULT_SETTINGS.enrichmentEnabled,
+		chatSystemPrompt: isValidChatSystemPrompt(raw.chatSystemPrompt)
+			? raw.chatSystemPrompt
+			: DEFAULT_SETTINGS.chatSystemPrompt,
+		chatModel: isValidChatModel(raw.chatModel) ? raw.chatModel : DEFAULT_SETTINGS.chatModel,
+		chatHistoryBudget: isValidHistoryBudget(raw.chatHistoryBudget)
+			? raw.chatHistoryBudget
+			: DEFAULT_SETTINGS.chatHistoryBudget,
 	};
 
 	return { settings, errors };
@@ -357,6 +402,18 @@ export function validateSettings(settings: EchoSettings): string[] {
 		errors.push('Enrichment enabled must be boolean.');
 	}
 
+	if (!isValidChatSystemPrompt(settings.chatSystemPrompt)) {
+		errors.push('Chat system prompt must be a string.');
+	}
+
+	if (!isValidChatModel(settings.chatModel)) {
+		errors.push('Chat model must be a string.');
+	}
+
+	if (!isValidHistoryBudget(settings.chatHistoryBudget)) {
+		errors.push('Chat history budget must be an integer between 1000 and 64000.');
+	}
+
 	return errors;
 }
 
@@ -420,6 +477,18 @@ function isValidFanoutCap(value: number): boolean {
 	return typeof value === 'number' && Number.isFinite(value) && value >= 10 && value <= 200;
 }
 
+function isValidChatSystemPrompt(value: string): boolean {
+	return typeof value === 'string';
+}
+
+function isValidChatModel(value: string): boolean {
+	return typeof value === 'string';
+}
+
+function isValidHistoryBudget(value: number): boolean {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 1000 && value <= 64000;
+}
+
 export async function watchSettings(): Promise<void> {
 	await joplin.settings.onChange((event) => {
 		const changedKeys = event.keys;
@@ -456,6 +525,9 @@ async function loadSettings(): Promise<EchoSettings> {
 		SETTINGS.semanticCascadeDepth,
 		SETTINGS.semanticCascadeFanoutCap,
 		SETTINGS.enrichmentEnabled,
+		SETTINGS.chatSystemPrompt,
+		SETTINGS.chatModel,
+		SETTINGS.chatHistoryBudget,
 	]);
 	const timeout = values[SETTINGS.connectionTimeoutSeconds];
 	const chunkSize = values[SETTINGS.chunkSize];
@@ -493,7 +565,26 @@ async function loadSettings(): Promise<EchoSettings> {
 		semanticCascadeDepth: typeof cascadeDepth === 'number' && Number.isFinite(cascadeDepth) ? cascadeDepth : DEFAULT_SETTINGS.semanticCascadeDepth,
 		semanticCascadeFanoutCap: typeof fanoutCap === 'number' && Number.isFinite(fanoutCap) ? fanoutCap : DEFAULT_SETTINGS.semanticCascadeFanoutCap,
 		enrichmentEnabled: typeof enrichment === 'boolean' ? enrichment : DEFAULT_SETTINGS.enrichmentEnabled,
+		chatSystemPrompt:
+			typeof values[SETTINGS.chatSystemPrompt] === 'string'
+				? (values[SETTINGS.chatSystemPrompt] as string)
+				: DEFAULT_SETTINGS.chatSystemPrompt,
+		chatModel: typeof values[SETTINGS.chatModel] === 'string' ? (values[SETTINGS.chatModel] as string) : DEFAULT_SETTINGS.chatModel,
+		chatHistoryBudget: readChatHistoryBudget(values[SETTINGS.chatHistoryBudget]),
 	};
+}
+
+// Retain the last valid history budget when the stored value is invalid, so a
+// transient bad read does not silently reset the context-window cap.
+let lastValidChatHistoryBudget: number = DEFAULT_SETTINGS.chatHistoryBudget;
+
+function readChatHistoryBudget(raw: unknown): number {
+	const value = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : NaN;
+	if (isValidHistoryBudget(value)) {
+		lastValidChatHistoryBudget = value;
+		return value;
+	}
+	return lastValidChatHistoryBudget;
 }
 
 function isValidBaseUrl(url: string): boolean {

@@ -6,6 +6,7 @@ export interface ChatMessage {
 export interface ChatOptions {
 	temperature?: number;
 	maxTokens?: number;
+	signal?: AbortSignal;
 }
 
 export interface Entity {
@@ -39,6 +40,8 @@ export interface TestConnectionOptions {
 export interface LLMProvider {
 	readonly name: string;
 	chat(messages: ChatMessage[], options?: ChatOptions): Promise<string>;
+	chatStream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string>;
+	listModels(): Promise<string[]>;
 	embeddings(texts: string[]): Promise<number[][]>;
 	extract(text: string): Promise<ExtractionResult>;
 	testConnection(options?: TestConnectionOptions): Promise<ConnectionTestResult>;

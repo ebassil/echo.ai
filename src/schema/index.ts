@@ -20,6 +20,8 @@ export const TABLES = {
   indexState: 'index_state',
   pipelineRuns: 'pipeline_runs',
   schemaMigrations: 'schema_migrations',
+  conversations: 'conversations',
+  conversationMessages: 'conversation_messages',
 } as const;
 
 // Row types
@@ -67,6 +69,28 @@ export interface IndexStateRow {
   last_indexed_at: string | null;
   error: string | null;
   updated_at: string;
+}
+
+// Chat conversations — private to the chat capability.
+export interface ConversationRow {
+  id: string;
+  title: string | null;
+  model: string;
+  system_prompt: string;
+  notes_on: number;
+  retrieval_toggles: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationMessageRow {
+  id: string;
+  conversation_id: string;
+  role: string;
+  content: string;
+  citations: string;
+  created_at: string;
+  seq: number;
 }
 
 // Search result shape (used by HTTP endpoint and CLI)

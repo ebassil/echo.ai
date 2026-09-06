@@ -20,6 +20,8 @@ import { createOrchestrationScheduler } from '../orchestration/scheduler';
 import { enqueueRun } from '../orchestration/runner';
 import { startCliEndpoint, stopCliEndpoint, registerCliCommands } from '../cli/commands';
 import { registerRetrievalSettings } from '../retrieval/settings';
+import { createChatPanel } from '../chat/panel';
+import type { ChatPanel } from '../chat/panel';
 
 export interface PluginContext {
 	dataDir: string;
@@ -42,6 +44,7 @@ export interface IndexingService {
 let context: PluginContext | null = null;
 let orchestrationTriggers: ReturnType<typeof createTriggers> | null = null;
 let orchestrationScheduler: ReturnType<typeof createOrchestrationScheduler> | null = null;
+let chatPanel: ChatPanel | null = null;
 
 export function getContext(): PluginContext {
 	if (!context) throw new Error('echo.ai plugin has not been started');
@@ -221,6 +224,14 @@ export async function start(): Promise<void> {
 			console.warn('[echo] indexing watcher failed to start', error);
 		}
 
+		// Start chat panel (non-fatal: chat is optional if the panel API is unavailable)
+		try {
+			chatPanel = await createChatPanel({ getProvider });
+			console.info('[echo] chat panel started');
+		} catch (error) {
+			console.warn('[echo] chat panel failed to start', error);
+		}
+
 		console.info('[echo] plugin started', { dataDir });
 	} catch (error) {
 		console.error('[echo] startup failed', error);
@@ -231,6 +242,11 @@ export async function start(): Promise<void> {
 
 export async function stop(): Promise<void> {
 	try {
+		// Tear down chat: abort any in-flight stream and drop panel listeners.
+		if (chatPanel) {
+			chatPanel.dispose();
+			chatPanel = null;
+		}
 		if (orchestrationScheduler) {
 			orchestrationScheduler.dispose();
 			orchestrationScheduler = null;
