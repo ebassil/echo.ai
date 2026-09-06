@@ -19,6 +19,7 @@ const MIGRATION_V4 = `
 		citations TEXT NOT NULL DEFAULT '[]',
 		created_at TEXT NOT NULL,
 		seq INTEGER NOT NULL,
+		error TEXT,
 		UNIQUE(conversation_id, seq)
 	);
 	CREATE INDEX idx_conversation_messages_conv ON conversation_messages(conversation_id, seq);

@@ -190,8 +190,99 @@ async function testProviderErrorSurfacesWithoutCrash() {
 	assert.ok(idleWithError.error.includes('connection refused'));
 
 	const snapshot = await lastSnapshot(events);
-	assert.strictEqual(snapshot.messages[snapshot.messages.length - 1].role, 'assistant');
-	console.log('✓ Provider error surfaces without crashing the conversation');
+	assert.strictEqual(snapshot.messages.length, 1, 'empty assistant bubble is dropped on failure');
+	const user = snapshot.messages[0];
+	assert.strictEqual(user.role, 'user');
+	assert.strictEqual(user.status, 'error', 'the triggering user message is flagged as failed');
+	assert.ok(user.error.includes('connection refused'), 'the failure message rides on the user bubble');
+	console.log('✓ Provider error flags the user message as failed (red bubble) without crashing');
+}
+
+async function testPartialResponseKeptOnError() {
+	const { controller, events } = setup({
+		provider: async function* () {
+			yield 'partial answer';
+			throw new Error('timeout');
+		},
+	});
+	await controller.init();
+	await controller.send('hello');
+
+	const snapshot = await lastSnapshot(events);
+	assert.strictEqual(snapshot.messages.length, 2);
+	assert.strictEqual(snapshot.messages[1].role, 'assistant');
+	assert.strictEqual(snapshot.messages[1].content, 'partial answer', 'partial stream content is preserved');
+	assert.strictEqual(snapshot.messages[0].status, 'error');
+	assert.ok(snapshot.messages[0].error.includes('timeout'));
+	console.log('✓ Partial responses are kept and the send is still flagged as failed');
+}
+
+async function testErrorPersistsAcrossReload() {
+	const { db, adapter } = makeMemoryDb();
+	const store = new ConversationStore(adapter);
+	const events = [];
+
+	const failing = new ChatController({
+		store,
+		provider: {
+			chatStream: async function* () {
+				throw new Error('agent not defined');
+			},
+			listModels: async () => ['llama3'],
+		},
+		retrieveContext: async () => RETRIEVAL_CONTEXT,
+		getChatSettings: async () => ({ systemPrompt: 'You are echo.', model: 'llama3', historyBudget: 8000 }),
+		isVaultLocked: async () => false,
+		onEvent: () => {},
+	});
+	await failing.init();
+	await failing.send('hello');
+	await delay();
+
+	const working = new ChatController({
+		store,
+		provider: {
+			chatStream: async function* () {
+				yield 'ok';
+			},
+			listModels: async () => ['llama3'],
+		},
+		retrieveContext: async () => RETRIEVAL_CONTEXT,
+		getChatSettings: async () => ({ systemPrompt: 'You are echo.', model: 'llama3', historyBudget: 8000 }),
+		isVaultLocked: async () => false,
+		onEvent: (event) => events.push(event),
+	});
+	await working.init();
+	await delay();
+
+	const snapshot = await lastSnapshot(events);
+	assert.strictEqual(snapshot.messages[0].status, 'error', 'failed message reloads as an error bubble');
+	assert.strictEqual(snapshot.messages[0].error, 'Provider error: agent not defined');
+	console.log('✓ Failed sends reload as red error bubbles');
+}
+
+async function testRegenerateClearsError() {
+	let invocations = 0;
+	const { controller, events } = setup({
+		provider: async function* () {
+			invocations++;
+			if (invocations === 1) throw new Error('agent not defined');
+			yield 'recovered';
+		},
+	});
+	await controller.init();
+	await controller.send('hello');
+	await delay();
+	assert.strictEqual((await lastSnapshot(events)).messages[0].status, 'error');
+
+	await controller.regenerate();
+	await delay();
+
+	const snapshot = await lastSnapshot(events);
+	assert.strictEqual(snapshot.messages[0].status, 'complete');
+	assert.strictEqual(snapshot.messages[0].error, null);
+	assert.strictEqual(snapshot.messages[snapshot.messages.length - 1].content, 'recovered');
+	console.log('✓ Regenerate clears the error flag and retries the failed send');
 }
 
 async function testVaultLockBlocksSend() {
@@ -305,6 +396,9 @@ function testBuildProviderMessages() {
 	await testStopLeavesPartialMessage();
 	await testRegenerateReplacesResponse();
 	await testProviderErrorSurfacesWithoutCrash();
+	await testPartialResponseKeptOnError();
+	await testErrorPersistsAcrossReload();
+	await testRegenerateClearsError();
 	await testVaultLockBlocksSend();
 	await testEmptyMessageRejected();
 	await testAutoTitleAndRename();

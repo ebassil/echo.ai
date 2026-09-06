@@ -91,6 +91,7 @@ export interface ConversationMessageRow {
   citations: string;
   created_at: string;
   seq: number;
+  error: string | null;
 }
 
 // Search result shape (used by HTTP endpoint and CLI)

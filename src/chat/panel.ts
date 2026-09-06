@@ -7,6 +7,7 @@ import { resolveChatSettings } from './settings';
 import { run, all, getDatabase } from '../storage/db';
 import { isVaultLocked } from '../indexing/vault';
 import { parseWebviewMessage, executePanelCommand, chatEventToWebviewMessage } from './protocol';
+import { errorMessage } from '../util/errors';
 import { PANEL_HTML } from './ui/panelHtml';
 
 const PANEL_ID = 'echo.chat';
@@ -54,6 +55,15 @@ export async function createChatPanel(options: { getProvider: () => LLMProvider 
 			await executePanelCommand(controller, command, { openCitation });
 		} catch (error) {
 			console.error('[echo] chat panel command failed', error);
+			// Never fail silently: echo the failure back so the panel can show it.
+			try {
+				joplin.views.panels.postMessage(handle, {
+					type: 'status',
+					conversationId: null,
+					status: 'idle',
+					error: `Chat command failed: ${errorMessage(error)}`,
+				});
+			} catch {}
 		}
 	});
 

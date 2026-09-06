@@ -242,15 +242,15 @@ const migrations: Migration[] = [
 			await run(dbConnection, `UPDATE edges SET source = 'joplin' WHERE source IS NULL`);
 		},
 	},
-	{
-		version: 4,
-		apply: async (dbConnection: any) => {
-			// Chat conversations and messages (private to the chat capability)
-			await run(dbConnection, 'PRAGMA foreign_keys = ON');
+{
+			version: 4,
+			apply: async (dbConnection: any) => {
+				// Chat conversations and messages (private to the chat capability)
+				await run(dbConnection, 'PRAGMA foreign_keys = ON');
 
-			await run(
-				dbConnection,
-				`CREATE TABLE IF NOT EXISTS conversations (
+				await run(
+					dbConnection,
+					`CREATE TABLE IF NOT EXISTS conversations (
 					id TEXT PRIMARY KEY,
 					title TEXT,
 					model TEXT NOT NULL,
@@ -260,11 +260,11 @@ const migrations: Migration[] = [
 					created_at TEXT NOT NULL,
 					updated_at TEXT NOT NULL
 				)`,
-			);
+				);
 
-			await run(
-				dbConnection,
-				`CREATE TABLE IF NOT EXISTS conversation_messages (
+				await run(
+					dbConnection,
+					`CREATE TABLE IF NOT EXISTS conversation_messages (
 					id TEXT PRIMARY KEY,
 					conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
 					role TEXT NOT NULL,
@@ -274,13 +274,29 @@ const migrations: Migration[] = [
 					seq INTEGER NOT NULL,
 					UNIQUE(conversation_id, seq)
 				)`,
-			);
+				);
 
-			await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_conversation_messages_conv ON conversation_messages(conversation_id, seq)`);
-			await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at)`);
+				await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_conversation_messages_conv ON conversation_messages(conversation_id, seq)`);
+				await run(dbConnection, `CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at)`);
+			},
 		},
-	},
-];
+		{
+			version: 5,
+			apply: async (dbConnection: any) => {
+				// Delivery error on a chat message so failed sends (provider
+				// unreachable, agent not configured, ...) surface as red bubbles.
+				const columns: { name: string }[] = await all(
+					dbConnection,
+					`SELECT name FROM pragma_table_info('conversation_messages')`,
+					[],
+				);
+				const hasError = columns.some((c) => c.name === 'error');
+				if (!hasError) {
+					await run(dbConnection, `ALTER TABLE conversation_messages ADD COLUMN error TEXT`);
+				}
+			},
+		},
+	];
 
 export const LATEST_SCHEMA_VERSION: number = migrations[migrations.length - 1].version;
 

@@ -98,6 +98,7 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 		gap: 8px;
 	}
 	.message {
+		position: relative;
 		max-width: 85%;
 		padding: 8px 10px;
 		border-radius: 8px;
@@ -107,6 +108,25 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 	}
 	.message.user { align-self: flex-end; background: var(--user-bg); }
 	.message.assistant { align-self: flex-start; background: var(--assistant-bg); }
+	.message.error {
+		background: #fdecea;
+		border: 1px solid #e74c3c;
+	}
+	.message.error .error-icon {
+		position: absolute;
+		top: 3px;
+		right: 3px;
+		border: none;
+		background: transparent;
+		color: #e74c3c;
+		padding: 2px;
+		line-height: 0;
+		cursor: help;
+	}
+	@media (prefers-color-scheme: dark) {
+		.message.error { background: #3b1f1c; border-color: #e06c5b; }
+		.message.error .error-icon { color: #e06c5b; }
+	}
 	.message .role-label {
 		font-size: 11px;
 		color: var(--muted);
@@ -268,7 +288,13 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 	const notesOnEl = document.getElementById('notes-on');
 	const graphEnabledEl = document.getElementById('graph-enabled');
 
-	function post(msg) { webviewApi.postMessage(msg); }
+	function post(msg) {
+		try {
+			webviewApi.postMessage(msg);
+		} catch (e) {
+			console.error('echo chat: postMessage failed', e);
+		}
+	}
 
 	function escapeHtml(text) {
 		return String(text)
@@ -290,6 +316,63 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 		return html;
 	}
 
+	function sendCurrentText() {
+		const text = inputEl.value.trim();
+		if (!text) return;
+		post({ type: 'send', text });
+		inputEl.value = '';
+		inputEl.style.height = '';
+		errorBanner.classList.remove('visible');
+	}
+
+	function autoGrow() {
+		inputEl.style.height = 'auto';
+		inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+	}
+
+	// ---- Event wiring (bound immediately so Enter/Send work even if a later
+	// ---- render call throws in some environment).
+	inputEl.addEventListener('input', autoGrow);
+
+	inputEl.addEventListener('keydown', (event) => {
+		const isEnter = event.key === 'Enter' || event.code === 'Enter';
+		if (isEnter && !event.shiftKey) {
+			event.preventDefault();
+			sendCurrentText();
+		}
+	});
+
+	sendBtn.addEventListener('click', sendCurrentText);
+	stopBtn.addEventListener('click', () => post({ type: 'stop' }));
+	regenBtn.addEventListener('click', () => post({ type: 'regenerate' }));
+
+	notesOnEl.addEventListener('change', () => post({ type: 'toggles', notesOn: notesOnEl.checked }));
+	graphEnabledEl.addEventListener('change', () => post({ type: 'toggles', graphEnabled: graphEnabledEl.checked }));
+	document.querySelectorAll('[data-retriever]').forEach((el) => {
+		el.addEventListener('change', () => {
+			const toggles = {};
+			toggles[el.dataset.retriever] = el.checked;
+			post({ type: 'toggles', toggles });
+		});
+	});
+
+	modelSelect.addEventListener('change', () => post({ type: 'model', model: modelSelect.value }));
+	systemPromptInput.addEventListener('change', () => post({ type: 'systemPrompt', prompt: systemPromptInput.value }));
+	titleInput.addEventListener('change', () => post({ type: 'renameConversation', title: titleInput.value }));
+
+	selectEl.addEventListener('change', () => post({ type: 'selectConversation', conversationId: selectEl.value }));
+	document.getElementById('new-conversation-btn').addEventListener('click', () => post({ type: 'newConversation' }));
+	document.getElementById('delete-conversation-btn').addEventListener('click', () => {
+		if (selectEl.value) post({ type: 'deleteConversation', conversationId: selectEl.value });
+	});
+
+	messagesEl.addEventListener('click', (event) => {
+		const citation = event.target.closest('a.citation');
+		if (citation && citation.dataset.note) post({ type: 'openCitation', noteId: citation.dataset.note });
+	});
+
+	// ---- Rendering.
+
 	function renderMessages() {
 		messagesEl.innerHTML = '';
 		if (!state || state.messages.length === 0) {
@@ -303,6 +386,15 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 			const el = document.createElement('div');
 			el.className = 'message ' + (message.role === 'user' ? 'user' : 'assistant');
 			if (message.status === 'streaming') el.classList.add('streaming');
+			if (message.status === 'error') {
+				el.classList.add('error');
+				const errIcon = document.createElement('button');
+				errIcon.type = 'button';
+				errIcon.className = 'error-icon';
+				errIcon.title = message.error || 'Message failed to send';
+				errIcon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+				el.appendChild(errIcon);
+			}
 			const label = document.createElement('span');
 			label.className = 'role-label';
 			label.textContent = message.role === 'user' ? 'You' : 'echo';
@@ -418,56 +510,6 @@ export const PANEL_HTML: string = `<!DOCTYPE html>
 				stopBtn.classList.toggle('visible', message.status === 'streaming');
 				break;
 		}
-	});
-
-	function autoGrow() {
-		inputEl.style.height = 'auto';
-		inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
-	}
-
-	inputEl.addEventListener('input', autoGrow);
-
-	sendBtn.addEventListener('click', () => {
-		const text = inputEl.value.trim();
-		if (!text) return;
-		post({ type: 'send', text });
-		inputEl.value = '';
-		inputEl.style.height = '';
-	});
-
-	inputEl.addEventListener('keydown', (event) => {
-		if (event.key === 'Enter' && !event.shiftKey) {
-			event.preventDefault();
-			sendBtn.click();
-		}
-	});
-
-	stopBtn.addEventListener('click', () => post({ type: 'stop' }));
-	regenBtn.addEventListener('click', () => post({ type: 'regenerate' }));
-
-	notesOnEl.addEventListener('change', () => post({ type: 'toggles', notesOn: notesOnEl.checked }));
-	graphEnabledEl.addEventListener('change', () => post({ type: 'toggles', graphEnabled: graphEnabledEl.checked }));
-	document.querySelectorAll('[data-retriever]').forEach((el) => {
-		el.addEventListener('change', () => {
-			const toggles = {};
-			toggles[el.dataset.retriever] = el.checked;
-			post({ type: 'toggles', toggles });
-		});
-	});
-
-	modelSelect.addEventListener('change', () => post({ type: 'model', model: modelSelect.value }));
-	systemPromptInput.addEventListener('change', () => post({ type: 'systemPrompt', prompt: systemPromptInput.value }));
-	titleInput.addEventListener('change', () => post({ type: 'renameConversation', title: titleInput.value }));
-
-	selectEl.addEventListener('change', () => post({ type: 'selectConversation', conversationId: selectEl.value }));
-	document.getElementById('new-conversation-btn').addEventListener('click', () => post({ type: 'newConversation' }));
-	document.getElementById('delete-conversation-btn').addEventListener('click', () => {
-		if (selectEl.value) post({ type: 'deleteConversation', conversationId: selectEl.value });
-	});
-
-	messagesEl.addEventListener('click', (event) => {
-		const citation = event.target.closest('a.citation');
-		if (citation && citation.dataset.note) post({ type: 'openCitation', noteId: citation.dataset.note });
 	});
 
 	post({ type: 'init' });

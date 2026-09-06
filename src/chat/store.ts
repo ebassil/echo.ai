@@ -35,12 +35,14 @@ export interface ConversationMessageRecord {
 	citations: Citation[];
 	createdAt: string;
 	seq: number;
+	error: string | null;
 }
 
 export interface AppendMessageInput {
 	role: ChatRole;
 	content: string;
 	citations?: Citation[];
+	error?: string | null;
 }
 
 export interface UpdateConversationFields {
@@ -151,13 +153,13 @@ export class ConversationStore {
 		const seq = await this.nextSeq(conversationId);
 
 		await this.db.run(
-			`INSERT INTO conversation_messages (id, conversation_id, role, content, citations, created_at, seq)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			[id, conversationId, message.role, message.content, JSON.stringify(citations), now, seq],
+			`INSERT INTO conversation_messages (id, conversation_id, role, content, citations, created_at, seq, error)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[id, conversationId, message.role, message.content, JSON.stringify(citations), now, seq, message.error ?? null],
 		);
 		await this.db.run('UPDATE conversations SET updated_at = ? WHERE id = ?', [now, conversationId]);
 
-		return { id, role: message.role, content: message.content, citations, createdAt: now, seq };
+		return { id, role: message.role, content: message.content, citations, createdAt: now, seq, error: message.error ?? null };
 	}
 
 	async listMessages(conversationId: string): Promise<ConversationMessageRecord[]> {
@@ -177,6 +179,13 @@ export class ConversationStore {
 
 	async deleteMessage(conversationId: string, seq: number): Promise<void> {
 		await this.db.run('DELETE FROM conversation_messages WHERE conversation_id = ? AND seq = ?', [conversationId, seq]);
+	}
+
+	async setMessageError(conversationId: string, seq: number, error: string | null): Promise<void> {
+		await this.db.run(
+			'UPDATE conversation_messages SET error = ? WHERE conversation_id = ? AND seq = ?',
+			[error, conversationId, seq],
+		);
 	}
 
 	private async nextSeq(conversationId: string): Promise<number> {
@@ -219,5 +228,6 @@ export function mapMessageRow(row: any): ConversationMessageRecord {
 		citations,
 		createdAt: row.created_at,
 		seq: row.seq,
+		error: row.error ?? null,
 	};
 }

@@ -103,6 +103,22 @@ async function testReplaceMessage() {
 	console.log('✓ Assistant message replaced (regenerate)');
 }
 
+async function testSetMessageError() {
+	const { store } = makeStore();
+	const conv = await store.createConversation({ model: 'llama3', systemPrompt: 'sys' });
+	const message = await store.appendMessage(conv.id, { role: 'user', content: 'hello' });
+	assert.strictEqual(message.error, null);
+
+	await store.setMessageError(conv.id, message.seq, 'Provider error: connection refused');
+	const [failed] = await store.listMessages(conv.id);
+	assert.strictEqual(failed.error, 'Provider error: connection refused');
+
+	await store.setMessageError(conv.id, message.seq, null);
+	const [cleared] = await store.listMessages(conv.id);
+	assert.strictEqual(cleared.error, null);
+	console.log('✓ setMessageError persists and clears a message delivery error');
+}
+
 (async () => {
 	await testCreateAndList();
 	await testRoundTrip();
@@ -110,6 +126,7 @@ async function testReplaceMessage() {
 	await testTogglePersistence();
 	await testEmptyConversation();
 	await testReplaceMessage();
+	await testSetMessageError();
 	console.log('All conversation repository tests passed');
 })().catch((error) => {
 	console.error(error);

@@ -16,7 +16,8 @@ export interface ControllerMessage {
 	citations: Citation[];
 	createdAt: string;
 	seq: number;
-	status: 'complete' | 'streaming' | 'stopped';
+	status: 'complete' | 'streaming' | 'stopped' | 'error';
+	error?: string | null;
 }
 
 export interface ConversationSummary {
@@ -209,6 +210,13 @@ export class ChatController {
 			return;
 		}
 
+		// A previously failed send is retried from the same user message.
+		if (lastUser.status === 'error') {
+			lastUser.status = 'complete';
+			lastUser.error = null;
+			await this.deps.store.setMessageError(state.id, lastUser.seq, null);
+		}
+
 		for (const message of state.messages.filter((m) => m.seq > lastUser.seq)) {
 			await this.deps.store.deleteMessage(state.id, message.seq);
 		}
@@ -234,7 +242,7 @@ export class ChatController {
 			title: conversation.title,
 			messages: messages.map((message) => ({
 				...message,
-				status: 'complete' as const,
+				status: message.error ? ('error' as const) : ('complete' as const),
 			})),
 			notesOn: conversation.notesOn,
 			retrievalToggles: conversation.retrievalToggles,
@@ -301,9 +309,26 @@ export class ChatController {
 			if (controller.signal.aborted) {
 				await this.finishMessage(state, pending, 'stopped');
 			} else {
-				// Surface provider errors without crashing; keep any partial response.
-				await this.finishMessage(state, pending, 'complete');
-				streamError = `Provider error: ${errorMessage(error)}`;
+				const errorText = `Provider error: ${errorMessage(error)}`;
+				if (pending.content.length === 0) {
+					// Nothing was generated: drop the empty assistant bubble so the
+					// failed send reads as a red-bordered user message instead.
+					await this.deps.store.deleteMessage(state.id, pending.seq);
+					state.messages = state.messages.filter((m) => m.seq !== pending.seq);
+				} else {
+					// Keep whatever partial response was produced.
+					await this.finishMessage(state, pending, 'complete');
+				}
+				// Flag the triggering user message as failed so the panel can show
+				// the error (red bubble with an X icon + tooltip).
+				const lastUser = lastOfRole(state.messages, 'user');
+				if (lastUser) {
+					lastUser.status = 'error';
+					lastUser.error = errorText;
+					await this.deps.store.setMessageError(state.id, lastUser.seq, errorText);
+				}
+				streamError = errorText;
+				this.emitSnapshot();
 			}
 		} finally {
 			state.streaming = false;
@@ -366,6 +391,7 @@ function toControllerMessage(message: {
 	citations: Citation[];
 	createdAt: string;
 	seq: number;
+	error?: string | null;
 }, status: ControllerMessage['status'] = 'complete'): ControllerMessage {
 	return {
 		id: message.id,
@@ -375,6 +401,7 @@ function toControllerMessage(message: {
 		createdAt: message.createdAt,
 		seq: message.seq,
 		status,
+		error: message.error ?? null,
 	};
 }
 
